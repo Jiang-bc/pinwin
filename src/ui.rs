@@ -620,6 +620,7 @@ unsafe fn refresh_pinned_listbox() {
         return;
     }
 
+    let previously_selected = get_selected_target_hwnds();
     let _ = SendMessageW(lst_hwnd, LB_RESETCONTENT, 0, 0);
     let mut hwnds = Vec::with_capacity(entries.len());
 
@@ -632,9 +633,11 @@ unsafe fn refresh_pinned_listbox() {
         hwnds.push(entry.target_hwnd);
     }
 
-    // Select all by default when items exist, matching PinnedWindowListControl behavior
-    if !entries.is_empty() {
-        let _ = SendMessageW(lst_hwnd, LB_SETSEL, TRUE as WPARAM, -1);
+    // Restore only the rows the user had selected before the refresh.
+    for (idx, &target_hwnd) in hwnds.iter().enumerate() {
+        if previously_selected.contains(&target_hwnd) {
+            let _ = SendMessageW(lst_hwnd, LB_SETSEL, TRUE as WPARAM, idx as LPARAM);
+        }
     }
 
     MAIN_UI.with(|c| c.borrow_mut().pinned_hwnds_in_list = hwnds);

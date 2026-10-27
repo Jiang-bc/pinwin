@@ -222,3 +222,34 @@ fn test_cli_pin_title_and_unpin_hwnd_live_window() {
         let _ = DestroyWindow(hwnd);
     }
 }
+#[test]
+fn test_ghost_mode_preserves_original_opacity() {
+    unsafe {
+        let notify_dummy = create_test_window("GhostNotifyDummy", WS_OVERLAPPEDWINDOW, 0);
+        let target = create_test_window("GhostOpacityTarget", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0);
+        assert_ne!(target, 0);
+        PinManager::init(notify_dummy);
+        assert!(PinManager::pin_window(target, 255, false).unwrap());
+        assert_eq!(PinManager::entries()[0].opacity, 255);
+        assert!(PinManager::set_window_click_through(target, true));
+        assert_eq!(PinManager::entries()[0].opacity, 255);
+        let mut alpha = 0u8;
+        let mut key = 0u32;
+        let mut flags = 0u32;
+        assert!(GetLayeredWindowAttributes(target, &mut key, &mut alpha, &mut flags) != FALSE);
+        assert_eq!(alpha, 255);
+        assert!(PinManager::set_window_click_through(target, false));
+        assert_eq!(PinManager::entries()[0].opacity, 255);
+        // Fully opaque + no click-through may legitimately drop WS_EX_LAYERED entirely.
+        let ex_style = GetWindowLongW(target, GWL_EXSTYLE) as u32;
+        if ex_style & WS_EX_LAYERED != 0 {
+            alpha = 0;
+            assert!(GetLayeredWindowAttributes(target, &mut key, &mut alpha, &mut flags) != FALSE);
+            assert_eq!(alpha, 255);
+        }
+        PinManager::unpin_window(target);
+        PinManager::shutdown();
+        let _ = DestroyWindow(target);
+        let _ = DestroyWindow(notify_dummy);
+    }
+}

@@ -224,7 +224,7 @@ unsafe extern "system" fn overlay_wnd_proc(
         WM_MOUSEMOVE => {
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
-            OVERLAY_STATE.with(|c| c.borrow_mut().cursor_pt = pt);
+            update_hover_target(hwnd, pt);
             let _ = InvalidateRect(hwnd, null(), FALSE);
             0
         }

@@ -313,11 +313,8 @@ impl PinManager {
         let Some(opacity) = cur_opacity else {
             return false;
         };
-        let effective_alpha = if enabled && opacity == 255 {
-            210
-        } else {
-            opacity
-        };
+        // Ghost Mode only toggles mouse click-through; keep opacity untouched.
+        let effective_alpha = opacity;
         if !ApiWindowEffects::set_click_through(target_hwnd, enabled, effective_alpha) {
             return false;
         }

@@ -6,3 +6,4 @@ bin
 /PinWinInstaller/PinWinInstaller-SetupFiles
 /PinWinInstaller/PinWinInstaller-cache
 /packages
+/target

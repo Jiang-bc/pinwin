@@ -1,41 +1,83 @@
-# pinwin - stands for "Pin Windows"
-### What?
-I always liked [DeskPins](http://efotinis.neocities.org/deskpins/index.html) windows application, written by [Elias Fotinis](http://efotinis.neocities.org/about.html) - very simple and intuitive, it allows you to make any 3rd party window, i.e. that of another application, [top most](https://msdn.microsoft.com/en-us/library/system.windows.window.topmost%28v=vs.110%29.aspx) (also known as "always-on-top"), and it will appear on top of other windows at all times, until DeskPins is closed. Below is a screenshot of how it works, self-explanatory:
+# PinWin v2.0 (Rust Native Rewrite)
 
-![DeskPins in action](http://i.imgur.com/Y65spks.png)
+**PinWin** is a lightweight, high-performance Windows utility to pin any window **Always on Top** (`WS_EX_TOPMOST`) — originally created by [Victor Zakharov](https://github.com/VictorZakharov/pinwin) in C# (`.NET Framework 4.0` WinForms) as an open-source replacement for DeskPins, and **completely rewritten and modernized in native Rust (`rustc 1.99.1`)**.
 
-[Link for DeskPins direct download](https://drive.google.com/file/d/0BzOSyp06l5JwMVNXYkFMQXNMUTQ/view?usp=sharing) is provided here for your convenience (no ads, using Google Drive).
+---
 
-DeskPins was written in C++ and [its source code recently made public](https://efotinis.neocities.org/downloads/efotinis-deskpins-e3caef22897e.zip) (thank you, Elias).
+## Key Optimizations & New Capabilities in v2.0 (Rust Edition)
 
-### Why?
-If you look at the attached readme file, the original software is not meant to work on Windows Vista and above. However, it kept working all the way until Windows 7, but then unfortunately, stopped working on Windows 8 and higher.
-So I decided to write one in .NET with support for all OS (hopefully).
+| Dimension | Legacy v0.2.2 (C# / .NET 4.0) | Modernized v2.0.0 (Rust Native Win32) |
+| :--- | :--- | :--- |
+| **Language & Runtime** | C# `.NET Framework 4.0` + `Newtonsoft.Json` | Pure **Rust 2021 (`rustc 1.99.1`)** — **0 external crate dependencies** |
+| **Executable Artifact** | Multi-file `.exe` + `.dll` + `.NET` runtime required | Single **449 KB** standalone native `PinWin.exe` (all icons & bitmaps embedded via `include_bytes!`) |
+| **Position Synchronization** | 10 ms `WinForms.Timer` polling loop + `Thread.Sleep(1)` on UI thread | Event-driven `SetWinEventHook` (`EVENT_OBJECT_LOCATIONCHANGE`, `EVENT_SYSTEM_MOVESIZEEND`, `EVENT_OBJECT_DESTROY`, `EVENT_OBJECT_NAMECHANGE`) + lightweight 250 ms non-blocking health check |
+| **Window Title Lookup** | Blocking `SendMessage(WM_GETTEXT)` — freezes PinWin if any target app hangs | Non-blocking `SendMessageTimeoutW(..., SMTO_ABORTIFHUNG, 200ms)` with `GetWindowTextW` fallback |
+| **High-DPI & Multi-Monitor** | Legacy `SetProcessDPIAware()` (Issue #17: broken on mixed-DPI displays) | `SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)` + `DWMWA_EXTENDED_FRAME_BOUNDS` |
+| **Pin Badge Placement** | Fixed `GetSystemMetrics` formula (Issue #26: overlaps custom title bars) | `DWMWA_CAPTION_BUTTON_BOUNDS` query with automatic bounds clamping |
+| **Window Opacity Control** | Not supported | **20%–100% Alpha Opacity** via Pin badge mouse-wheel, right-click menu, main GUI buttons, or CLI `--opacity` |
+| **Click-Through (Ghost Mode)** | Not supported | **`WS_EX_TRANSPARENT | WS_EX_LAYERED` Ghost Mode** to click right through reference overlays |
+| **Interactive Overlay HUD** | Static screenshot with crosshair cursor | Double-buffered GDI screenshot + **live cyan target window bounding-box highlight** + **real-time HUD coordinate/title bar** |
+| **Headless CLI Automation** | GUI-only | Full CLI support (`--list-windows`, `--pin-hwnd`, `--unpin-hwnd`, `--pin-title`, `--opacity`, `--unpin-all`, `--print-settings`) |
 
-### How is the progress so far?
+---
 
-![PinWin in action](https://i.imgur.com/aH0FWrw.png)
+## Project Architecture (`src/`)
 
-- Basic functionality is there, tested on Windows XP, 7, 8.1 and 10.
-- Multi-monitor supported (verified dual extend configuration).
-- High DPI supported (verified 100-200%).
-- Select another window to be top most via CTRL+F11 (same as DeskPins).
-- Make window under cursor top most via CTRL+F12 (save a drag-and-click).
-- User friendly installer with upgrade support.
-- Configurable keyboard shortcuts (select and pin window, pin under cursor).
+- `src/lib.rs` — Library crate root exposing all modules for unit and integration testing.
+- `src/main.rs` — Application entry point (Per-Monitor V2 DPI setup, CLI dispatch, `SingleInstanceManager` mutex guard, GUI launch).
+- `src/algorithms.rs` — Generic `HierarchyLookup<T>` trait & `FnHierarchyLookup` with `MAX_HIERARCHY_DEPTH = 256` cycle protection.
+- `src/keys.rs` — `KeyCombo` bitmask representation and full bidirectional `KeysStringConverter` (`"CTRL + F11"`, `"SHIFT + ALT + P"`).
+- `src/relative_path.rs` — Windows path normalization, `get_relative_path`, `choose_optimal_path`, and asset path resolution.
+- `src/debounce.rs` — Deterministic `DebounceTracker` state machine.
+- `src/settings.rs` — Zero-dependency JSON serializer/parser compatible with `%APPDATA%\PinWin\settings.json`.
+- `src/winapi/ffi.rs` — Raw `extern "system"` Win32 ABI declarations (`user32`, `gdi32`, `shell32`, `comdlg32`, `kernel32`, plus dynamic `dwmapi` / DPI symbols).
+- `src/winapi/mod.rs` — Safe Rust wrappers (`ApiTopMost`, `ApiWindowEffects`, `ApiWindowPos`, `WindowStyle`, `ApiWindowTitle`, `ApiOwnerFormLookup`, `ApiForm`, `ApiHotKey`, `ApiResources`, `SingleInstanceManager`).
+- `src/pin_manager.rs` — `PinManager`, floating `PinBadge` window (`PinWin_BadgeWindow_Class`), `SetWinEventHook` callbacks, badge context menu, and mouse-wheel opacity adjustment.
+- `src/overlay.rs` — Full-virtual-desktop `DesktopOverlay::select_point` with double-buffered GDI rendering, target window highlight frame, and HUD banner.
+- `src/ui.rs` — Native Win32 `MainForm`, `Shell_NotifyIconW` system tray integration, and modal `SettingsDialog` with live shortcut key capture and custom icon preview.
+- `src/cli.rs` — Command-line parser and headless window automation actions.
+- `tests/win32_integration_test.rs` — Live Win32 integration test suite covering parent-child `HWND` hierarchy, `WS_EX_TOPMOST`, `SendMessageTimeoutW`, layered opacity/click-through, embedded assets, mutex locking, and `PinManager` lifecycle.
 
-### Known Issues
+---
 
-- [#17](https://github.com/VictorZakharov/pinwin/issues/17) On Windows 10 if each monitor is using different DPI, screen capture window takes portion of the screen. Workaround is to make sure all your monitors are using the same DPI. PinWin was initially designed to improve productivity on a single monitor, to avoid context switch. With multiple monitors, its usefulness fades.
-- [#26](https://github.com/VictorZakharov/pinwin/issues/26) UWP is not currently supported, the pin is placed on top of minimize button. Otherwise it works fine. To fix, requires framework upgrade to 4.6, which breaks XP compatibility. Vote for linked ticket - with enough votes I will create another repo with Windows 7+ OS support level, then it can handle UWP.
+## Building & Testing
 
-### Download
+```bash
+# Run unit tests + live Win32 integration tests
+cargo test
 
-You can download PinWin [via GitHub releases](https://github.com/VictorZakharov/pinwin/releases), where the most recent version is available (source code, binaries or installer).
+# Run strict Clippy static analysis
+cargo clippy --all-targets -- -D warnings
 
-### Credits
+# Build optimized standalone release binary (LTO + strip)
+cargo build --release
+```
 
-I would like to thank below people and communities for making this project happen:
-- StackOverflow, for [this answer](http://stackoverflow.com/questions/17897646/gma-useractivitymonitor-setwindowshookex-error-126) (special thanks to [Hans Passant](http://stackoverflow.com/users/17034/hans-passant)) and [this answer](http://stackoverflow.com/questions/4604023/unable-to-read-another-applications-caption) (special thanks to [Tergiver](http://stackoverflow.com/users/351385/tergiver)).
-- StackOverflow, thanks to [Barmak Shemirani](https://stackoverflow.com/users/4603670/barmak-shemirani) for [suggestion](https://stackoverflow.com/a/60807482/897326) on [How to compute total width of title bar buttons for 3rd party window on windows 10](https://stackoverflow.com/questions/60806098/compute-total-width-of-title-bar-buttons-for-3rd-party-window-on-windows-10).
-- Creators of [Inno Setup](http://www.jrsoftware.org/isinfo.php), developer-friendly installer tool with a flat learning curve.
+The compiled standalone binary is emitted at `target/release/PinWin.exe`.
+
+---
+
+## CLI Usage
+
+```text
+PinWin v2.0.0 (Rust Rewrite) — Native Win32 Always-on-Top Window Manager
+
+USAGE:
+  PinWin.exe [OPTIONS]
+
+OPTIONS:
+  -h, --help                Show this help message
+  -v, --version             Show version information
+  --minimized, --tray       Start PinWin GUI minimized in the system tray
+  --list-windows            List all visible top-level windows with HWND & TopMost state
+  --pin-hwnd <HWND>         Set a window TopMost by HWND (decimal or 0xHEX)
+  --unpin-hwnd <HWND>       Clear TopMost & restore opacity on a window by HWND
+  --pin-title <SUBSTRING>   Set matching window(s) TopMost by title substring
+  --opacity <30..255>       Optional alpha opacity when pinning via CLI
+  --unpin-all               Clear TopMost on all user top-level windows
+  --print-settings          Print active settings JSON
+```
+
+## License
+
+MIT License

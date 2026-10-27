@@ -1,0 +1,23 @@
+[package]
+name = "pinwin"
+version = "2.0.0"
+edition = "2021"
+authors = ["Victor Zakharov", "Chiang-bc"]
+description = "PinWin (Rust Rewrite) - High-performance native Win32 Always-on-Top window manager & DeskPins alternative"
+license = "MIT"
+repository = "https://github.com/VictorZakharov/pinwin"
+
+[lib]
+name = "pinwin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "PinWin"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

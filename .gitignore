@@ -7,3 +7,4 @@ bin
 /PinWinInstaller/PinWinInstaller-cache
 /packages
 /target
+/.worktrees

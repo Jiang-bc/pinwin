@@ -35,11 +35,11 @@ impl DebounceTracker {
         if !self.pending {
             return false;
         }
-        if let Some(last) = self.last_event {
-            if now.saturating_duration_since(last) >= self.delay {
-                self.pending = false;
-                return true;
-            }
+        if let Some(last) = self.last_event
+            && now.saturating_duration_since(last) >= self.delay
+        {
+            self.pending = false;
+            return true;
         }
         false
     }

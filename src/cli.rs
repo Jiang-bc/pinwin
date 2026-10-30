@@ -3,9 +3,9 @@
 //! Enables scripting, automation, and headless verification in addition to the system tray GUI.
 
 use crate::settings::ApplicationSettings;
-use crate::winapi::ffi::HWND;
+use crate::winapi::ffi::{HWND, RectExt};
 use crate::winapi::{
-    enumerate_top_level_windows, ApiTopMost, ApiWindowEffects, ApiWindowPos, ApiWindowTitle,
+    ApiTopMost, ApiWindowEffects, ApiWindowPos, ApiWindowTitle, enumerate_top_level_windows,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -140,10 +140,13 @@ pub fn parse_hwnd(raw: &str) -> Result<HWND, String> {
         .strip_prefix("0x")
         .or_else(|| trimmed.strip_prefix("0X"))
     {
-        isize::from_str_radix(hex, 16).map_err(|_| format!("Invalid hex HWND: {}", raw))
+        usize::from_str_radix(hex, 16)
+            .map(|value| value as HWND)
+            .map_err(|_| format!("Invalid hex HWND: {}", raw))
     } else {
         trimmed
-            .parse::<isize>()
+            .parse::<usize>()
+            .map(|value| value as HWND)
             .map_err(|_| format!("Invalid HWND: {}", raw))
     }
 }
@@ -163,7 +166,9 @@ pub fn execute_cli_action(action: CliAction) -> i32 {
             println!("  -h, --help                Show this help message");
             println!("  -v, --version             Show version information");
             println!("  --minimized, --tray       Start PinWin GUI minimized in the system tray");
-            println!("  --list-windows            List all visible top-level windows with HWND & TopMost state");
+            println!(
+                "  --list-windows            List all visible top-level windows with HWND & TopMost state"
+            );
             println!("  --pin-hwnd <HWND>         Set a window TopMost by HWND (decimal or 0xHEX)");
             println!(
                 "  --unpin-hwnd <HWND>       Clear TopMost & restore opacity on a window by HWND"
@@ -303,7 +308,7 @@ mod tests {
         assert_eq!(
             parse_cli_args(["PinWin.exe", "--pin-hwnd", "0x1234", "--opacity", "200"]).unwrap(),
             CliAction::PinHwnd {
-                hwnd: 0x1234,
+                hwnd: 0x1234 as HWND,
                 opacity: Some(200)
             }
         );

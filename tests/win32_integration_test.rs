@@ -15,64 +15,70 @@ use std::ptr::null;
 use std::sync::Once;
 
 use pinwin::algorithms::HierarchyLookup;
-use pinwin::cli::{execute_cli_action, CliAction};
+use pinwin::cli::{CliAction, execute_cli_action};
 use pinwin::pin_manager::PinManager;
 use pinwin::winapi::ffi::*;
 use pinwin::winapi::{
-    enumerate_top_level_windows, to_wide, ApiOwnerFormLookup, ApiResources, ApiTopMost,
-    ApiWindowEffects, ApiWindowPos, ApiWindowTitle, SingleInstanceManager, WindowStyle,
-    EMBEDDED_TARGET_CURSOR_ICO, EMBEDDED_TRAY_ICO,
+    ApiOwnerFormLookup, ApiResources, ApiTopMost, ApiWindowEffects, ApiWindowPos, ApiWindowTitle,
+    EMBEDDED_TARGET_CURSOR_ICO, EMBEDDED_TRAY_ICO, SingleInstanceManager, WindowStyle,
+    enumerate_top_level_windows, to_wide,
 };
 
 static REGISTER_TEST_CLASS: Once = Once::new();
 const TEST_TOPLEVEL_CLASS: &str = "PinWin_IntegrationTest_TopLevel_Class";
 
 unsafe fn create_test_window(title: &str, style: DWORD, parent: HWND) -> HWND {
-    let h_inst = GetModuleHandleW(null());
-    REGISTER_TEST_CLASS.call_once(|| {
-        let cls_w = to_wide(TEST_TOPLEVEL_CLASS);
-        let mut wc: WNDCLASSEXW = zeroed();
-        wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
-        wc.lpfnWndProc = Some(DefWindowProcW);
-        wc.hInstance = h_inst;
-        wc.lpszClassName = cls_w.as_ptr();
-        let _ = RegisterClassExW(&wc);
-    });
+    unsafe {
+        let h_inst = GetModuleHandleW(null());
+        REGISTER_TEST_CLASS.call_once(|| {
+            let cls_w = to_wide(TEST_TOPLEVEL_CLASS);
+            let mut wc: WNDCLASSEXW = zeroed();
+            wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
+            wc.lpfnWndProc = Some(DefWindowProcW);
+            wc.hInstance = h_inst;
+            wc.lpszClassName = cls_w.as_ptr();
+            let _ = RegisterClassExW(&wc);
+        });
 
-    let cls = if (style & WS_CHILD) != 0 {
-        to_wide("STATIC")
-    } else {
-        to_wide(TEST_TOPLEVEL_CLASS)
-    };
-    let text = to_wide(title);
-    CreateWindowExW(
-        0,
-        cls.as_ptr(),
-        text.as_ptr(),
-        style,
-        100,
-        100,
-        320,
-        220,
-        parent,
-        0,
-        h_inst,
-        null(),
-    )
+        let cls = if (style & WS_CHILD) != 0 {
+            to_wide("STATIC")
+        } else {
+            to_wide(TEST_TOPLEVEL_CLASS)
+        };
+        let text = to_wide(title);
+        CreateWindowExW(
+            0,
+            cls.as_ptr(),
+            text.as_ptr(),
+            style,
+            100,
+            100,
+            320,
+            220,
+            parent,
+            std::ptr::null_mut(),
+            h_inst,
+            null(),
+        )
+    }
 }
 
 #[test]
 fn test_win32_owner_form_lookup_parent_child_hierarchy() {
     unsafe {
         // Root top-level window -> Child panel -> Nested button
-        let root = create_test_window("PinWinRootTestWindow", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0);
-        assert_ne!(root, 0);
+        let root = create_test_window(
+            "PinWinRootTestWindow",
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            std::ptr::null_mut(),
+        );
+        assert!(!root.is_null());
 
         let child = create_test_window("ChildPanel", WS_CHILD | WS_VISIBLE, root);
-        assert_ne!(child, 0);
+        assert!(!child.is_null());
 
         let grandchild = create_test_window("GrandChildButton", WS_CHILD | WS_VISIBLE, child);
-        assert_ne!(grandchild, 0);
+        assert!(!grandchild.is_null());
 
         let lookup = ApiOwnerFormLookup;
         assert_eq!(lookup.find_parent(grandchild), root);
@@ -89,9 +95,9 @@ fn test_win32_topmost_and_window_title_and_effects() {
         let hwnd = create_test_window(
             "PinWinTopMostIntegrationWindow",
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            0,
+            std::ptr::null_mut(),
         );
-        assert_ne!(hwnd, 0);
+        assert!(!hwnd.is_null());
 
         // Verify non-blocking title retrieval
         let title = ApiWindowTitle::from_handle(hwnd);
@@ -123,21 +129,84 @@ fn test_win32_topmost_and_window_title_and_effects() {
 }
 
 #[test]
+fn owned_resources_release_on_drop() {
+    // Process-wide counters must be isolated from the suite's concurrently created windows.
+    if std::env::var_os("PINWIN_RESOURCE_CHILD").is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "owned_resources_release_on_drop",
+                "--test-threads=1",
+            ])
+            .env("PINWIN_RESOURCE_CHILD", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    use pinwin::winapi::resources::{OwnedBitmap, OwnedIcon};
+    unsafe {
+        // Warm up lazy Windows allocations before measuring resources owned by this process.
+        drop(OwnedIcon::from_owned(
+            ApiResources::create_icon_from_ico_bytes(EMBEDDED_TRAY_ICO, true, 32),
+        ));
+        let process = GetCurrentProcess();
+        let before = GetGuiResources(process, GR_GDIOBJECTS);
+        for _ in 0..100 {
+            let icon = OwnedIcon::from_owned(ApiResources::create_icon_from_ico_bytes(
+                EMBEDDED_TRAY_ICO,
+                true,
+                32,
+            ))
+            .unwrap();
+            let bitmap =
+                OwnedBitmap::from_owned(CreateBitmap(16, 16, 1, 32, std::ptr::null())).unwrap();
+            assert!(!icon.as_raw().is_null());
+            assert!(!bitmap.as_raw().is_null());
+        }
+        let after = GetGuiResources(process, GR_GDIOBJECTS);
+        assert!(
+            after <= before + 4,
+            "GDI objects grew from {before} to {after}"
+        );
+    }
+}
+
+#[test]
+fn malformed_icon_directory_is_rejected() {
+    // A directory entry pointing beyond the supplied allocation must never reach Win32.
+    let mut bytes = vec![0u8; 22];
+    bytes[2] = 1;
+    bytes[4] = 1;
+    bytes[6] = 32;
+    bytes[7] = 32;
+    bytes[14..18].copy_from_slice(&128u32.to_le_bytes());
+    bytes[18..22].copy_from_slice(&4096u32.to_le_bytes());
+    assert!(ApiResources::create_icon_from_ico_bytes(&bytes, true, 32).is_null());
+}
+
+#[test]
 fn test_embedded_assets_load_cleanly() {
     unsafe {
         let (hbmp, w, h, _colorkey) = ApiResources::create_pinned_bitmap_from_embedded();
-        assert_ne!(hbmp, 0);
+        assert!(!hbmp.is_null());
         assert_eq!(w, 19);
         assert_eq!(h, 18);
         let _ = DeleteObject(hbmp);
 
         let tray_icon = ApiResources::create_icon_from_ico_bytes(EMBEDDED_TRAY_ICO, true, 16);
-        assert_ne!(tray_icon, 0);
+        assert!(!tray_icon.is_null());
 
         let target_cursor =
             ApiResources::create_icon_from_ico_bytes(EMBEDDED_TARGET_CURSOR_ICO, true, 32);
-        assert_ne!(target_cursor, 0);
+        assert!(!target_cursor.is_null());
     }
+}
+
+#[test]
+fn mutex_error_does_not_allow_second_instance() {
+    let mut invalid = SingleInstanceManager::new("invalid\\name\\mutex");
+    assert!(!invalid.is_first_instance(0));
 }
 
 #[test]
@@ -150,13 +219,14 @@ fn test_single_instance_mutex_exclusivity() {
 #[test]
 fn test_pin_manager_lifecycle() {
     unsafe {
-        let notify_dummy = create_test_window("NotifyDummy", WS_OVERLAPPEDWINDOW, 0);
+        let notify_dummy =
+            create_test_window("NotifyDummy", WS_OVERLAPPEDWINDOW, std::ptr::null_mut());
         let target = create_test_window(
             "TargetWindowForPinManager",
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            0,
+            std::ptr::null_mut(),
         );
-        assert_ne!(target, 0);
+        assert!(!target.is_null());
 
         PinManager::init(notify_dummy);
         assert_eq!(PinManager::count(), 0);
@@ -172,9 +242,11 @@ fn test_pin_manager_lifecycle() {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].target_hwnd, target);
         assert_eq!(entries[0].opacity, 220);
-        assert!(entries[0]
-            .display_label()
-            .contains("TargetWindowForPinManager"));
+        assert!(
+            entries[0]
+                .display_label()
+                .contains("TargetWindowForPinManager")
+        );
         assert!(ApiWindowPos::is_window(entries[0].badge_hwnd));
 
         // Update opacity & ghost mode via PinManager
@@ -201,9 +273,9 @@ fn test_cli_pin_title_and_unpin_hwnd_live_window() {
         let hwnd = create_test_window(
             "UniqueCliTargetWindow_98765",
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            0,
+            std::ptr::null_mut(),
         );
-        assert_ne!(hwnd, 0);
+        assert!(!hwnd.is_null());
 
         let all = enumerate_top_level_windows();
         assert!(all.iter().any(|w| w.hwnd == hwnd));
@@ -225,9 +297,17 @@ fn test_cli_pin_title_and_unpin_hwnd_live_window() {
 #[test]
 fn test_ghost_mode_preserves_original_opacity() {
     unsafe {
-        let notify_dummy = create_test_window("GhostNotifyDummy", WS_OVERLAPPEDWINDOW, 0);
-        let target = create_test_window("GhostOpacityTarget", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0);
-        assert_ne!(target, 0);
+        let notify_dummy = create_test_window(
+            "GhostNotifyDummy",
+            WS_OVERLAPPEDWINDOW,
+            std::ptr::null_mut(),
+        );
+        let target = create_test_window(
+            "GhostOpacityTarget",
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            std::ptr::null_mut(),
+        );
+        assert!(!target.is_null());
         PinManager::init(notify_dummy);
         assert!(PinManager::pin_window(target, 255, false).unwrap());
         assert_eq!(PinManager::entries()[0].opacity, 255);

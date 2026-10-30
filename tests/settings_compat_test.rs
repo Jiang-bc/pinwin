@@ -67,9 +67,11 @@ fn atomic_save_preserves_previous_file_on_failure() {
         .share_mode(0)
         .open(&path)
         .unwrap();
-    assert!(ApplicationSettings::default()
-        .save_to_explicit_path(&path)
-        .is_err());
+    assert!(
+        ApplicationSettings::default()
+            .save_to_explicit_path(&path)
+            .is_err()
+    );
     drop(locked);
     assert_eq!(fs::read(&path).unwrap(), original);
     ApplicationSettings::default()

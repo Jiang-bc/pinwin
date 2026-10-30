@@ -3,7 +3,11 @@
 //! Ported and enhanced from `PinWin/WinApi/*.cs`, `PinWin/BusinessLayer/WindowStyle.cs`,
 //! `PinWin/BusinessLayer/SingleInstanceManager.cs`, and `PinWin/BusinessLayer/ScreenCapture.cs`.
 
+// SDK handle pointers are opaque tokens validated by Windows; these wrappers never dereference them.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 pub mod ffi;
+pub mod resources;
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
@@ -59,8 +63,8 @@ impl SingleInstanceManager {
 
     /// Attempt to acquire single-instance lock within `timeout_ms`.
     pub fn is_first_instance(&mut self, timeout_ms: u32) -> bool {
-        if self.mutex_handle == 0 {
-            return true;
+        if self.mutex_handle.is_null() {
+            return false;
         }
         let res = unsafe { WaitForSingleObject(self.mutex_handle, timeout_ms) };
         self.has_ownership = res == WAIT_OBJECT_0 || res == WAIT_ABANDONED;
@@ -70,14 +74,14 @@ impl SingleInstanceManager {
 
 impl Drop for SingleInstanceManager {
     fn drop(&mut self) {
-        if self.mutex_handle != 0 {
+        if !self.mutex_handle.is_null() {
             unsafe {
                 if self.has_ownership {
                     let _ = ReleaseMutex(self.mutex_handle);
                 }
                 let _ = CloseHandle(self.mutex_handle);
             }
-            self.mutex_handle = 0;
+            self.mutex_handle = std::ptr::null_mut();
         }
     }
 }
@@ -88,7 +92,7 @@ pub struct ApiTopMost;
 impl ApiTopMost {
     /// Set external window as TopMost (`HWND_TOPMOST`).
     pub fn set(hwnd: HWND) -> bool {
-        if hwnd == 0 || !ApiWindowPos::is_window(hwnd) {
+        if hwnd.is_null() || !ApiWindowPos::is_window(hwnd) {
             return false;
         }
         unsafe {
@@ -106,7 +110,7 @@ impl ApiTopMost {
 
     /// Clear TopMost status for an external window (`HWND_NOTOPMOST`).
     pub fn clear(hwnd: HWND) -> bool {
-        if hwnd == 0 || !ApiWindowPos::is_window(hwnd) {
+        if hwnd.is_null() || !ApiWindowPos::is_window(hwnd) {
             return false;
         }
         unsafe {
@@ -124,7 +128,7 @@ impl ApiTopMost {
 
     /// Check whether `hwnd` currently has `WS_EX_TOPMOST`.
     pub fn is_topmost(hwnd: HWND) -> bool {
-        if hwnd == 0 || !ApiWindowPos::is_window(hwnd) {
+        if hwnd.is_null() || !ApiWindowPos::is_window(hwnd) {
             return false;
         }
         let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 };
@@ -139,7 +143,7 @@ impl ApiWindowEffects {
     /// Set window opacity (`alpha` in `30..=255`).
     /// When `alpha == 255` and click-through is not enabled, removes `WS_EX_LAYERED` for zero overhead.
     pub fn set_opacity(hwnd: HWND, alpha: u8) -> bool {
-        if hwnd == 0 || !ApiWindowPos::is_window(hwnd) {
+        if hwnd.is_null() || !ApiWindowPos::is_window(hwnd) {
             return false;
         }
         let clamped = alpha.clamp(30, 255);
@@ -167,7 +171,7 @@ impl ApiWindowEffects {
 
     /// Enable or disable Click-Through (Ghost Mode) via `WS_EX_TRANSPARENT | WS_EX_LAYERED`.
     pub fn set_click_through(hwnd: HWND, enabled: bool, current_alpha: u8) -> bool {
-        if hwnd == 0 || !ApiWindowPos::is_window(hwnd) {
+        if hwnd.is_null() || !ApiWindowPos::is_window(hwnd) {
             return false;
         }
         let clamped = current_alpha.clamp(30, 255);
@@ -193,7 +197,7 @@ impl ApiWindowEffects {
     }
 
     pub fn is_click_through(hwnd: HWND) -> bool {
-        if hwnd == 0 || !ApiWindowPos::is_window(hwnd) {
+        if hwnd.is_null() || !ApiWindowPos::is_window(hwnd) {
             return false;
         }
         let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 };
@@ -207,14 +211,14 @@ pub struct ApiWindowPos;
 impl ApiWindowPos {
     /// Get real visible window bounds using `DWMWA_EXTENDED_FRAME_BOUNDS` with fallback to `GetWindowRect`.
     pub fn get(hwnd: HWND) -> RECT {
-        if hwnd == 0 {
+        if hwnd.is_null() {
             return RECT::default();
         }
         let mut rect = RECT::default();
         unsafe {
             let hr = DwmGetWindowAttribute(
                 hwnd,
-                DWMWA_EXTENDED_FRAME_BOUNDS,
+                DWMWA_EXTENDED_FRAME_BOUNDS.try_into().unwrap(),
                 &mut rect as *mut RECT as *mut c_void,
                 size_of::<RECT>() as u32,
             );
@@ -227,15 +231,15 @@ impl ApiWindowPos {
     }
 
     pub fn is_window(hwnd: HWND) -> bool {
-        hwnd != 0 && unsafe { IsWindow(hwnd) != FALSE }
+        !hwnd.is_null() && unsafe { IsWindow(hwnd) != FALSE }
     }
 
     pub fn is_iconic(hwnd: HWND) -> bool {
-        hwnd != 0 && unsafe { IsIconic(hwnd) != FALSE }
+        !hwnd.is_null() && unsafe { IsIconic(hwnd) != FALSE }
     }
 
     pub fn is_visible(hwnd: HWND) -> bool {
-        if hwnd == 0 || !Self::is_window(hwnd) {
+        if hwnd.is_null() || !Self::is_window(hwnd) {
             return false;
         }
         unsafe {
@@ -245,14 +249,14 @@ impl ApiWindowPos {
     }
 
     pub fn is_cloaked(hwnd: HWND) -> bool {
-        if hwnd == 0 {
+        if hwnd.is_null() {
             return false;
         }
         let mut cloaked: u32 = 0;
         let hr = unsafe {
             DwmGetWindowAttribute(
                 hwnd,
-                DWMWA_CLOAKED,
+                DWMWA_CLOAKED.try_into().unwrap(),
                 &mut cloaked as *mut u32 as *mut c_void,
                 size_of::<u32>() as u32,
             )
@@ -287,7 +291,7 @@ pub struct WindowStyle {
 
 impl WindowStyle {
     pub fn new(handle: HWND) -> Self {
-        let style = if handle != 0 {
+        let style = if !handle.is_null() {
             unsafe { GetWindowLongW(handle, GWL_STYLE) as u32 }
         } else {
             0
@@ -308,12 +312,12 @@ impl WindowStyle {
 
     /// Compute total width of the window's caption button area (Minimize, Maximize, Close).
     pub fn get_control_box_width(&self) -> i32 {
-        if self.handle != 0 {
+        if !self.handle.is_null() {
             let mut rc = RECT::default();
             let hr = unsafe {
                 DwmGetWindowAttribute(
                     self.handle,
-                    DWMWA_CAPTION_BUTTON_BOUNDS,
+                    DWMWA_CAPTION_BUTTON_BOUNDS.try_into().unwrap(),
                     &mut rc as *mut RECT as *mut c_void,
                     size_of::<RECT>() as u32,
                 )
@@ -353,7 +357,7 @@ pub struct ApiWindowTitle;
 
 impl ApiWindowTitle {
     pub fn from_handle(handle: HWND) -> String {
-        if handle == 0 || !ApiWindowPos::is_window(handle) {
+        if handle.is_null() || !ApiWindowPos::is_window(handle) {
             return String::new();
         }
 
@@ -403,7 +407,7 @@ impl ApiWindowTitle {
     }
 
     pub fn class_name(handle: HWND) -> String {
-        if handle == 0 {
+        if handle.is_null() {
             return String::new();
         }
         let mut buf = [0u16; 256];
@@ -422,14 +426,14 @@ pub struct ApiOwnerFormLookup;
 
 impl HierarchyLookup<HWND> for ApiOwnerFormLookup {
     fn get_parent_element(&self, child: HWND) -> HWND {
-        if child == 0 {
-            return 0;
+        if child.is_null() {
+            return std::ptr::null_mut();
         }
         unsafe { GetParent(child) }
     }
 
     fn stop_condition(&self, parent: HWND) -> bool {
-        parent == 0
+        parent.is_null()
     }
 }
 
@@ -439,12 +443,12 @@ pub struct ApiForm;
 impl ApiForm {
     pub fn select(point: POINT) -> HWND {
         let found = unsafe { WindowFromPoint(point) };
-        if found == 0 {
-            return 0;
+        if found.is_null() {
+            return std::ptr::null_mut();
         }
         let lookup = ApiOwnerFormLookup;
         let root = lookup.find_parent(found);
-        if root != 0 {
+        if !root.is_null() {
             root
         } else {
             unsafe { GetAncestor(found, GA_ROOT) }
@@ -457,14 +461,14 @@ pub struct ApiHotKey;
 
 impl ApiHotKey {
     pub fn set(hwnd: HWND, combo: KeyCombo, key_id: i32) -> bool {
-        if hwnd == 0 || combo.is_none() {
+        if hwnd.is_null() || combo.is_none() {
             return false;
         }
         unsafe { RegisterHotKey(hwnd, key_id, combo.modifiers, combo.vk) != FALSE }
     }
 
     pub fn clear(hwnd: HWND, key_id: i32) {
-        if hwnd != 0 {
+        if !hwnd.is_null() {
             unsafe {
                 let _ = UnregisterHotKey(hwnd, key_id);
             }
@@ -482,7 +486,7 @@ impl ApiResources {
             let wide = to_wide(&resolved.to_string_lossy());
             let h = unsafe {
                 LoadImageW(
-                    0,
+                    std::ptr::null_mut(),
                     wide.as_ptr(),
                     IMAGE_ICON,
                     size,
@@ -490,7 +494,7 @@ impl ApiResources {
                     LR_LOADFROMFILE | if size == 0 { LR_DEFAULTSIZE } else { 0 },
                 )
             };
-            if h != 0 {
+            if !h.is_null() {
                 return h;
             }
         }
@@ -502,49 +506,66 @@ impl ApiResources {
         if let Some(resolved) = resolve_asset_path(custom_path) {
             let wide = to_wide(&resolved.to_string_lossy());
             let hc = unsafe { LoadCursorFromFileW(wide.as_ptr()) };
-            if hc != 0 {
+            if !hc.is_null() {
                 return hc;
             }
         }
-        let h = Self::create_icon_from_ico_bytes(embedded_ico, true, 32);
-        if h != 0 {
-            h
-        } else {
-            unsafe { LoadCursorW(0, IDC_CROSS) }
+        unsafe {
+            let Some(icon) = resources::OwnedIcon::from_owned(Self::create_icon_from_ico_bytes(
+                embedded_ico,
+                true,
+                32,
+            )) else {
+                return CopyIcon(LoadCursorW(null_mut(), IDC_CROSS));
+            };
+            let mut info: ICONINFO = zeroed();
+            if GetIconInfo(icon.as_raw(), &mut info) == FALSE {
+                return null_mut();
+            }
+            let _mask = resources::OwnedBitmap::from_owned(info.hbmMask);
+            let _color = resources::OwnedBitmap::from_owned(info.hbmColor);
+            info.fIcon = FALSE;
+            info.xHotspot = 16;
+            info.yHotspot = 16;
+            CreateIconIndirect(&info)
         }
     }
 
-    /// Parse standard Windows `.ico` directory and create an `HICON` directly from memory bytes.
-    pub fn create_icon_from_ico_bytes(ico_bytes: &[u8], is_icon: bool, desired_size: i32) -> HICON {
-        if ico_bytes.len() < 22 {
-            return unsafe { LoadIconW(0, IDI_APPLICATION) };
+    /// Validate an ICO directory before handing its selected frame to Windows.
+    /// Invalid data returns a null handle; successful handles are always owned.
+    pub fn create_icon_from_ico_bytes(bytes: &[u8], is_icon: bool, desired_size: i32) -> HICON {
+        if !is_icon || bytes.len() < 6 || bytes[..4] != [0, 0, 1, 0] {
+            return null_mut();
         }
+        let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        let directory_end = 6 + count * 16;
+        if count == 0 || directory_end > bytes.len() {
+            return null_mut();
+        }
+        let mut frames = Vec::with_capacity(count);
+        for entry in bytes[6..directory_end].as_chunks::<16>().0 {
+            let length = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
+            let offset = u32::from_le_bytes(entry[12..16].try_into().unwrap()) as usize;
+            let Some(end) = offset.checked_add(length) else {
+                return null_mut();
+            };
+            if length == 0 || offset < directory_end || end > bytes.len() {
+                return null_mut();
+            }
+            let width = if entry[0] == 0 { 256 } else { entry[0] as i32 };
+            frames.push(((width - desired_size).abs(), offset, end));
+        }
+        let (_, offset, end) = frames.into_iter().min_by_key(|frame| frame.0).unwrap();
         unsafe {
-            let id = LookupIconIdFromDirectoryEx(
-                ico_bytes.as_ptr(),
-                if is_icon { TRUE } else { FALSE },
+            CreateIconFromResourceEx(
+                bytes[offset..end].as_ptr(),
+                (end - offset) as u32,
+                TRUE,
+                0x0003_0000,
                 desired_size,
                 desired_size,
                 0,
-            );
-            if id > 0 && (id as usize) < ico_bytes.len() {
-                let offset = id as usize;
-                // Read bytesInRes from directory or pass remaining slice
-                let remaining = (ico_bytes.len() - offset) as u32;
-                let h = CreateIconFromResourceEx(
-                    ico_bytes[offset..].as_ptr(),
-                    remaining,
-                    if is_icon { TRUE } else { FALSE },
-                    0x0003_0000,
-                    desired_size,
-                    desired_size,
-                    0,
-                );
-                if h != 0 {
-                    return h;
-                }
-            }
-            LoadIconW(0, IDI_APPLICATION)
+            )
         }
     }
 
@@ -552,7 +573,7 @@ impl ApiResources {
     pub fn create_pinned_bitmap_from_embedded() -> (HBITMAP, i32, i32, COLORREF) {
         let bytes = EMBEDDED_PINNED_BMP;
         if bytes.len() < 54 || &bytes[0..2] != b"BM" {
-            return (0, 43, 42, rgb(255, 0, 255));
+            return (std::ptr::null_mut(), 43, 42, rgb(255, 0, 255));
         }
         let data_offset = u32::from_le_bytes([bytes[10], bytes[11], bytes[12], bytes[13]]) as usize;
         let width = i32::from_le_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]);
@@ -560,11 +581,11 @@ impl ApiResources {
         let bpp = u16::from_le_bytes([bytes[28], bytes[29]]);
 
         if width <= 0 || height <= 0 || data_offset >= bytes.len() {
-            return (0, 43, 42, rgb(255, 0, 255));
+            return (std::ptr::null_mut(), 43, 42, rgb(255, 0, 255));
         }
 
         unsafe {
-            let screen_dc = GetDC(0);
+            let screen_dc = GetDC(std::ptr::null_mut());
             let mut bmi: BITMAPINFO = zeroed();
             bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
             bmi.bmiHeader.biWidth = width;
@@ -574,8 +595,15 @@ impl ApiResources {
             bmi.bmiHeader.biCompression = BI_RGB;
 
             let mut bits_ptr: *mut c_void = null_mut();
-            let hbmp = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits_ptr, 0, 0);
-            if hbmp != 0 && !bits_ptr.is_null() {
+            let hbmp = CreateDIBSection(
+                screen_dc,
+                &bmi,
+                DIB_RGB_COLORS,
+                &mut bits_ptr,
+                std::ptr::null_mut(),
+                0,
+            );
+            if !hbmp.is_null() && !bits_ptr.is_null() {
                 let pixel_data = &bytes[data_offset..];
                 let stride = ((width as usize * (bpp as usize / 8) + 3) & !3) * height as usize;
                 let copy_len = pixel_data.len().min(stride);
@@ -588,7 +616,7 @@ impl ApiResources {
             let colorkey = GetPixel(mem_dc, 0, 0);
             SelectObject(mem_dc, old);
             DeleteDC(mem_dc);
-            ReleaseDC(0, screen_dc);
+            ReleaseDC(std::ptr::null_mut(), screen_dc);
 
             (hbmp, width, height, colorkey)
         }
@@ -638,7 +666,7 @@ pub fn capture_desktop_bitmap(bounds: RECT) -> HBITMAP {
     let w = bounds.width();
     let h = bounds.height();
     if w <= 0 || h <= 0 {
-        return 0;
+        return std::ptr::null_mut();
     }
     unsafe {
         let h_desk = GetDesktopWindow();
@@ -665,7 +693,7 @@ pub fn capture_desktop_bitmap(bounds: RECT) -> HBITMAP {
 }
 
 /// Information about a top-level visible window on the system.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WindowInfo {
     pub hwnd: HWND,
     pub title: String,
@@ -678,21 +706,23 @@ pub struct WindowInfo {
 /// Enumerate all visible, titled top-level windows (useful for CLI `--list` / `--pin-title` and tests).
 pub fn enumerate_top_level_windows() -> Vec<WindowInfo> {
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let list = &mut *(lparam as *mut Vec<WindowInfo>);
-        if ApiWindowPos::is_visible(hwnd) && !ApiWindowPos::is_cloaked(hwnd) {
-            let title = ApiWindowTitle::from_handle(hwnd);
-            if !title.trim().is_empty() {
-                list.push(WindowInfo {
-                    hwnd,
-                    title,
-                    class_name: ApiWindowTitle::class_name(hwnd),
-                    is_topmost: ApiTopMost::is_topmost(hwnd),
-                    is_minimized: ApiWindowPos::is_iconic(hwnd),
-                    bounds: ApiWindowPos::get(hwnd),
-                });
+        unsafe {
+            let list = &mut *(lparam as *mut Vec<WindowInfo>);
+            if ApiWindowPos::is_visible(hwnd) && !ApiWindowPos::is_cloaked(hwnd) {
+                let title = ApiWindowTitle::from_handle(hwnd);
+                if !title.trim().is_empty() {
+                    list.push(WindowInfo {
+                        hwnd,
+                        title,
+                        class_name: ApiWindowTitle::class_name(hwnd),
+                        is_topmost: ApiTopMost::is_topmost(hwnd),
+                        is_minimized: ApiWindowPos::is_iconic(hwnd),
+                        bounds: ApiWindowPos::get(hwnd),
+                    });
+                }
             }
+            TRUE
         }
-        TRUE
     }
 
     let mut list: Vec<WindowInfo> = Vec::new();

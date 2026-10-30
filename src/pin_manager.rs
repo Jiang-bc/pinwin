@@ -11,8 +11,9 @@ use std::mem::{size_of, zeroed};
 use std::ptr::null;
 
 use crate::winapi::ffi::*;
+use crate::winapi::resources::{OwnedBitmap, OwnedHook, OwnedMenu};
 use crate::winapi::{
-    to_wide, ApiResources, ApiTopMost, ApiWindowEffects, ApiWindowPos, ApiWindowTitle, WindowStyle,
+    ApiResources, ApiTopMost, ApiWindowEffects, ApiWindowPos, ApiWindowTitle, WindowStyle, to_wide,
 };
 
 const PIN_BADGE_CLASS: &str = "PinWin_BadgeWindow_Class";
@@ -31,7 +32,7 @@ const IDM_BADGE_OPACITY_50: usize = 5005;
 const IDM_BADGE_GHOST_TOGGLE: usize = 5006;
 
 /// Represents a single pinned external window and its attached `PinBadge` overlay.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PinnedWindowEntry {
     pub target_hwnd: HWND,
     pub badge_hwnd: HWND,
@@ -45,7 +46,7 @@ impl PinnedWindowEntry {
     /// Formatted label displayed in `MainForm`'s `lstMain` listbox.
     pub fn display_label(&self) -> String {
         let base_title = if self.title.trim().is_empty() {
-            format!("Window (0x{:X})", self.target_hwnd)
+            format!("Window (0x{:X})", self.target_hwnd as usize)
         } else {
             self.title.clone()
         };
@@ -70,19 +71,21 @@ impl PinnedWindowEntry {
 struct GlobalHookState {
     notify_hwnd: HWND,
     pinned_bitmap: HBITMAP,
+    owned_bitmap: Option<OwnedBitmap>,
     badge_width: i32,
     badge_height: i32,
     badge_colorkey: COLORREF,
     entries: Vec<PinnedWindowEntry>,
-    hooks: Vec<HWINEVENTHOOK>,
+    hooks: Vec<OwnedHook>,
     class_registered: bool,
 }
 
 impl Default for GlobalHookState {
     fn default() -> Self {
         Self {
-            notify_hwnd: 0,
-            pinned_bitmap: 0,
+            notify_hwnd: std::ptr::null_mut(),
+            pinned_bitmap: std::ptr::null_mut(),
+            owned_bitmap: None,
             badge_width: 43,
             badge_height: 42,
             badge_colorkey: rgb(255, 0, 255),
@@ -106,8 +109,9 @@ impl PinManager {
         STATE.with(|cell| {
             let mut st = cell.borrow_mut();
             st.notify_hwnd = notify_hwnd;
-            if st.pinned_bitmap == 0 {
+            if st.pinned_bitmap.is_null() {
                 let (hbmp, w, h, key) = ApiResources::create_pinned_bitmap_from_embedded();
+                st.owned_bitmap = unsafe { OwnedBitmap::from_owned(hbmp) };
                 st.pinned_bitmap = hbmp;
                 st.badge_width = w;
                 st.badge_height = h;
@@ -118,7 +122,10 @@ impl PinManager {
                 st.class_registered = true;
             }
             if st.hooks.is_empty() {
-                st.hooks = install_win_event_hooks();
+                st.hooks = install_win_event_hooks()
+                    .into_iter()
+                    .filter_map(|h| unsafe { OwnedHook::from_owned(h) })
+                    .collect();
             }
         });
     }
@@ -128,19 +135,9 @@ impl PinManager {
         Self::unpin_all();
         STATE.with(|cell| {
             let mut st = cell.borrow_mut();
-            for h in st.hooks.drain(..) {
-                if h != 0 {
-                    unsafe {
-                        let _ = UnhookWinEvent(h);
-                    }
-                }
-            }
-            if st.pinned_bitmap != 0 {
-                unsafe {
-                    let _ = DeleteObject(st.pinned_bitmap);
-                }
-                st.pinned_bitmap = 0;
-            }
+            st.hooks.clear();
+            st.owned_bitmap = None;
+            st.pinned_bitmap = std::ptr::null_mut();
         });
     }
 
@@ -175,7 +172,7 @@ impl PinManager {
         default_opacity: u8,
         toggle_if_pinned: bool,
     ) -> Result<bool, &'static str> {
-        if target_hwnd == 0 || !ApiWindowPos::is_window(target_hwnd) {
+        if target_hwnd.is_null() || !ApiWindowPos::is_window(target_hwnd) {
             return Err("Target window handle is invalid.");
         }
 
@@ -247,7 +244,7 @@ impl PinManager {
         });
 
         if let Some(entry) = removed {
-            if entry.badge_hwnd != 0 && ApiWindowPos::is_window(entry.badge_hwnd) {
+            if !entry.badge_hwnd.is_null() && ApiWindowPos::is_window(entry.badge_hwnd) {
                 unsafe {
                     let _ = DestroyWindow(entry.badge_hwnd);
                 }
@@ -371,7 +368,7 @@ impl PinManager {
         };
 
         if ApiWindowPos::is_iconic(target_hwnd) || !ApiWindowPos::is_visible(target_hwnd) {
-            if badge_hwnd != 0 {
+            if !badge_hwnd.is_null() {
                 unsafe {
                     let _ = ShowWindow(badge_hwnd, SW_HIDE);
                 }
@@ -384,7 +381,7 @@ impl PinManager {
         }
 
         let new_pos = WindowStyle::get_pin_badge_location(target_hwnd);
-        if badge_hwnd != 0 && ApiWindowPos::is_window(badge_hwnd) {
+        if !badge_hwnd.is_null() && ApiWindowPos::is_window(badge_hwnd) {
             unsafe {
                 let _ = SetWindowPos(
                     badge_hwnd,
@@ -433,7 +430,7 @@ impl PinManager {
 
 fn notify_list_changed() {
     let notify_hwnd = STATE.with(|c| c.borrow().notify_hwnd);
-    if notify_hwnd != 0 && ApiWindowPos::is_window(notify_hwnd) {
+    if !notify_hwnd.is_null() && ApiWindowPos::is_window(notify_hwnd) {
         unsafe {
             let _ = PostMessageW(notify_hwnd, WM_PINWIN_LIST_CHANGED, 0, 0);
         }
@@ -448,7 +445,7 @@ fn register_badge_window_class() {
         wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
         wc.lpfnWndProc = Some(badge_wnd_proc);
         wc.hInstance = h_inst;
-        wc.hCursor = LoadCursorW(0, IDC_HAND);
+        wc.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_HAND);
         wc.lpszClassName = class_name.as_ptr();
         let _ = RegisterClassExW(&wc);
     }
@@ -473,13 +470,13 @@ fn create_badge_window(target_hwnd: HWND, pos: POINT) -> HWND {
             pos.y,
             w,
             h,
-            0,
-            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
             h_inst,
             null(),
         );
-        if hwnd != 0 {
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, target_hwnd);
+        if !hwnd.is_null() {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, target_hwnd as isize);
             let _ = SetLayeredWindowAttributes(hwnd, colorkey, 255, LWA_COLORKEY);
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             let _ = UpdateWindow(hwnd);
@@ -494,167 +491,177 @@ unsafe extern "system" fn badge_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    match msg {
-        WM_MOUSEACTIVATE => MA_NOACTIVATE,
-        WM_LBUTTONUP => {
-            let target_hwnd = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if target_hwnd != 0 {
-                let notify_hwnd = STATE.with(|c| c.borrow().notify_hwnd);
-                if notify_hwnd != 0 {
-                    let _ =
-                        PostMessageW(notify_hwnd, WM_PINWIN_BADGE_UNPIN, target_hwnd as usize, 0);
-                } else {
-                    PinManager::unpin_window(target_hwnd);
+    unsafe {
+        match msg {
+            WM_MOUSEACTIVATE => MA_NOACTIVATE.try_into().unwrap(),
+            WM_LBUTTONUP => {
+                let target_hwnd = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as HWND;
+                if !target_hwnd.is_null() {
+                    let notify_hwnd = STATE.with(|c| c.borrow().notify_hwnd);
+                    if !notify_hwnd.is_null() {
+                        let _ = PostMessageW(
+                            notify_hwnd,
+                            WM_PINWIN_BADGE_UNPIN,
+                            target_hwnd as usize,
+                            0,
+                        );
+                    } else {
+                        PinManager::unpin_window(target_hwnd);
+                    }
                 }
+                0
             }
-            0
-        }
-        WM_RBUTTONUP => {
-            let target_hwnd = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if target_hwnd != 0 {
-                show_badge_context_menu(hwnd, target_hwnd);
+            WM_RBUTTONUP => {
+                let target_hwnd = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as HWND;
+                if !target_hwnd.is_null() {
+                    show_badge_context_menu(hwnd, target_hwnd);
+                }
+                0
             }
-            0
-        }
-        WM_MOUSEWHEEL => {
-            let target_hwnd = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if target_hwnd != 0 {
-                let delta = get_wheel_delta_wparam(wparam);
-                let cur_opacity = STATE.with(|cell| {
-                    cell.borrow()
-                        .entries
-                        .iter()
-                        .find(|e| e.target_hwnd == target_hwnd)
-                        .map(|e| e.opacity)
-                        .unwrap_or(255)
+            WM_MOUSEWHEEL => {
+                let target_hwnd = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as HWND;
+                if !target_hwnd.is_null() {
+                    let delta = get_wheel_delta_wparam(wparam);
+                    let cur_opacity = STATE.with(|cell| {
+                        cell.borrow()
+                            .entries
+                            .iter()
+                            .find(|e| e.target_hwnd == target_hwnd)
+                            .map(|e| e.opacity)
+                            .unwrap_or(255)
+                    });
+                    let step: i32 = if delta > 0 { 15 } else { -15 };
+                    let next_opacity = (cur_opacity as i32 + step).clamp(50, 255) as u8;
+                    PinManager::set_window_opacity(target_hwnd, next_opacity);
+                }
+                0
+            }
+            WM_PAINT => {
+                let mut ps: PAINTSTRUCT = zeroed();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                let (hbmp, w, h) = STATE.with(|cell| {
+                    let st = cell.borrow();
+                    (st.pinned_bitmap, st.badge_width, st.badge_height)
                 });
-                let step: i32 = if delta > 0 { 15 } else { -15 };
-                let next_opacity = (cur_opacity as i32 + step).clamp(50, 255) as u8;
-                PinManager::set_window_opacity(target_hwnd, next_opacity);
+                if !hbmp.is_null() {
+                    let mem_dc = CreateCompatibleDC(hdc);
+                    let old = SelectObject(mem_dc, hbmp);
+                    let _ = BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
+                    SelectObject(mem_dc, old);
+                    DeleteDC(mem_dc);
+                }
+                EndPaint(hwnd, &ps);
+                0
             }
-            0
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
-        WM_PAINT => {
-            let mut ps: PAINTSTRUCT = zeroed();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            let (hbmp, w, h) = STATE.with(|cell| {
-                let st = cell.borrow();
-                (st.pinned_bitmap, st.badge_width, st.badge_height)
-            });
-            if hbmp != 0 {
-                let mem_dc = CreateCompatibleDC(hdc);
-                let old = SelectObject(mem_dc, hbmp);
-                let _ = BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
-                SelectObject(mem_dc, old);
-                DeleteDC(mem_dc);
-            }
-            EndPaint(hwnd, &ps);
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 
 unsafe fn show_badge_context_menu(badge_hwnd: HWND, target_hwnd: HWND) {
-    let (opacity, click_through) = STATE.with(|cell| {
-        cell.borrow()
-            .entries
-            .iter()
-            .find(|e| e.target_hwnd == target_hwnd)
-            .map(|e| (e.opacity, e.click_through))
-            .unwrap_or((255, false))
-    });
+    unsafe {
+        let (opacity, click_through) = STATE.with(|cell| {
+            cell.borrow()
+                .entries
+                .iter()
+                .find(|e| e.target_hwnd == target_hwnd)
+                .map(|e| (e.opacity, e.click_through))
+                .unwrap_or((255, false))
+        });
 
-    let menu = CreatePopupMenu();
-    if menu == 0 {
-        return;
-    }
+        let Some(owned_menu) = OwnedMenu::from_owned(CreatePopupMenu()) else {
+            return;
+        };
+        let menu = owned_menu.as_raw();
+        if menu.is_null() {
+            return;
+        }
 
-    let lbl_unpin = to_wide("Unpin Window (Left-Click)");
-    let lbl_100 = to_wide("Opacity: 100% (Opaque)");
-    let lbl_85 = to_wide("Opacity: 85%");
-    let lbl_70 = to_wide("Opacity: 70%");
-    let lbl_50 = to_wide("Opacity: 50%");
-    let lbl_ghost = to_wide("Click-Through (Ghost Mode)");
+        let lbl_unpin = to_wide("Unpin Window (Left-Click)");
+        let lbl_100 = to_wide("Opacity: 100% (Opaque)");
+        let lbl_85 = to_wide("Opacity: 85%");
+        let lbl_70 = to_wide("Opacity: 70%");
+        let lbl_50 = to_wide("Opacity: 50%");
+        let lbl_ghost = to_wide("Click-Through (Ghost Mode)");
 
-    let _ = AppendMenuW(menu, MF_STRING, IDM_BADGE_UNPIN, lbl_unpin.as_ptr());
-    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, null());
-    let _ = AppendMenuW(
-        menu,
-        MF_STRING | if opacity >= 250 { MF_CHECKED } else { 0 },
-        IDM_BADGE_OPACITY_100,
-        lbl_100.as_ptr(),
-    );
-    let _ = AppendMenuW(
-        menu,
-        MF_STRING
-            | if (210..250).contains(&opacity) {
-                MF_CHECKED
-            } else {
-                0
-            },
-        IDM_BADGE_OPACITY_85,
-        lbl_85.as_ptr(),
-    );
-    let _ = AppendMenuW(
-        menu,
-        MF_STRING
-            | if (165..210).contains(&opacity) {
-                MF_CHECKED
-            } else {
-                0
-            },
-        IDM_BADGE_OPACITY_70,
-        lbl_70.as_ptr(),
-    );
-    let _ = AppendMenuW(
-        menu,
-        MF_STRING | if opacity < 165 { MF_CHECKED } else { 0 },
-        IDM_BADGE_OPACITY_50,
-        lbl_50.as_ptr(),
-    );
-    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, null());
-    let _ = AppendMenuW(
-        menu,
-        MF_STRING | if click_through { MF_CHECKED } else { 0 },
-        IDM_BADGE_GHOST_TOGGLE,
-        lbl_ghost.as_ptr(),
-    );
+        let _ = AppendMenuW(menu, MF_STRING, IDM_BADGE_UNPIN, lbl_unpin.as_ptr());
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | if opacity >= 250 { MF_CHECKED } else { 0 },
+            IDM_BADGE_OPACITY_100,
+            lbl_100.as_ptr(),
+        );
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING
+                | if (210..250).contains(&opacity) {
+                    MF_CHECKED
+                } else {
+                    0
+                },
+            IDM_BADGE_OPACITY_85,
+            lbl_85.as_ptr(),
+        );
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING
+                | if (165..210).contains(&opacity) {
+                    MF_CHECKED
+                } else {
+                    0
+                },
+            IDM_BADGE_OPACITY_70,
+            lbl_70.as_ptr(),
+        );
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | if opacity < 165 { MF_CHECKED } else { 0 },
+            IDM_BADGE_OPACITY_50,
+            lbl_50.as_ptr(),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | if click_through { MF_CHECKED } else { 0 },
+            IDM_BADGE_GHOST_TOGGLE,
+            lbl_ghost.as_ptr(),
+        );
 
-    let mut pt = POINT::default();
-    let _ = GetCursorPos(&mut pt);
-    let _ = SetForegroundWindow(badge_hwnd);
-    let cmd = TrackPopupMenu(
-        menu,
-        TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
-        pt.x,
-        pt.y,
-        0,
-        badge_hwnd,
-        null(),
-    ) as usize;
-    let _ = DestroyMenu(menu);
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let _ = SetForegroundWindow(badge_hwnd);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            pt.x,
+            pt.y,
+            0,
+            badge_hwnd,
+            null(),
+        ) as usize;
 
-    match cmd {
-        IDM_BADGE_UNPIN => {
-            PinManager::unpin_window(target_hwnd);
+        match cmd {
+            IDM_BADGE_UNPIN => {
+                PinManager::unpin_window(target_hwnd);
+            }
+            IDM_BADGE_OPACITY_100 => {
+                PinManager::set_window_opacity(target_hwnd, 255);
+            }
+            IDM_BADGE_OPACITY_85 => {
+                PinManager::set_window_opacity(target_hwnd, 217);
+            }
+            IDM_BADGE_OPACITY_70 => {
+                PinManager::set_window_opacity(target_hwnd, 178);
+            }
+            IDM_BADGE_OPACITY_50 => {
+                PinManager::set_window_opacity(target_hwnd, 128);
+            }
+            IDM_BADGE_GHOST_TOGGLE => {
+                PinManager::set_window_click_through(target_hwnd, !click_through);
+            }
+            _ => {}
         }
-        IDM_BADGE_OPACITY_100 => {
-            PinManager::set_window_opacity(target_hwnd, 255);
-        }
-        IDM_BADGE_OPACITY_85 => {
-            PinManager::set_window_opacity(target_hwnd, 217);
-        }
-        IDM_BADGE_OPACITY_70 => {
-            PinManager::set_window_opacity(target_hwnd, 178);
-        }
-        IDM_BADGE_OPACITY_50 => {
-            PinManager::set_window_opacity(target_hwnd, 128);
-        }
-        IDM_BADGE_GHOST_TOGGLE => {
-            PinManager::set_window_click_through(target_hwnd, !click_through);
-        }
-        _ => {}
     }
 }
 
@@ -666,26 +673,26 @@ fn install_win_event_hooks() -> Vec<HWINEVENTHOOK> {
         let h1 = SetWinEventHook(
             EVENT_OBJECT_DESTROY,
             EVENT_OBJECT_NAMECHANGE,
-            0,
+            std::ptr::null_mut(),
             Some(win_event_proc),
             0,
             0,
             flags,
         );
-        if h1 != 0 {
+        if !h1.is_null() {
             hooks.push(h1);
         }
         // Hook system move/size end and minimize start/end
         let h2 = SetWinEventHook(
             EVENT_SYSTEM_MOVESIZEEND,
             EVENT_SYSTEM_MINIMIZEEND,
-            0,
+            std::ptr::null_mut(),
             Some(win_event_proc),
             0,
             0,
             flags,
         );
-        if h2 != 0 {
+        if !h2.is_null() {
             hooks.push(h2);
         }
     }
@@ -701,7 +708,7 @@ unsafe extern "system" fn win_event_proc(
     _id_event_thread: DWORD,
     _dwms_event_time: DWORD,
 ) {
-    if hwnd == 0 || id_object != OBJID_WINDOW {
+    if hwnd.is_null() || id_object != OBJID_WINDOW {
         return;
     }
 

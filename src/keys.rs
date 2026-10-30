@@ -278,24 +278,25 @@ pub fn key_name_to_vk(name: &str) -> Option<u32> {
         }
     }
 
-    if let Some(rest) = upper.strip_prefix('D') {
-        if rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit() {
-            return Some(0x30 + (rest.as_bytes()[0] - b'0') as u32);
-        }
+    if let Some(rest) = upper.strip_prefix('D')
+        && rest.len() == 1
+        && rest.as_bytes()[0].is_ascii_digit()
+    {
+        return Some(0x30 + (rest.as_bytes()[0] - b'0') as u32);
     }
 
-    if let Some(rest) = upper.strip_prefix('F') {
-        if let Ok(num) = rest.parse::<u32>() {
-            if (1..=24).contains(&num) {
-                return Some(VK_F1 + num - 1);
-            }
-        }
+    if let Some(rest) = upper.strip_prefix('F')
+        && let Ok(num) = rest.parse::<u32>()
+        && (1..=24).contains(&num)
+    {
+        return Some(VK_F1 + num - 1);
     }
 
-    if let Some(rest) = upper.strip_prefix("NUMPAD") {
-        if rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit() {
-            return Some(VK_NUMPAD0 + (rest.as_bytes()[0] - b'0') as u32);
-        }
+    if let Some(rest) = upper.strip_prefix("NUMPAD")
+        && rest.len() == 1
+        && rest.as_bytes()[0].is_ascii_digit()
+    {
+        return Some(VK_NUMPAD0 + (rest.as_bytes()[0] - b'0') as u32);
     }
 
     match upper.as_str() {

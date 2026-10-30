@@ -1,8 +1,8 @@
 //! PinWin executable entry point (`PinWin/Program.cs` equivalent).
 
-use pinwin::cli::{execute_cli_action, parse_cli_args, CliAction};
+use pinwin::cli::{CliAction, execute_cli_action, parse_cli_args};
 use pinwin::ui::run_gui_app;
-use pinwin::winapi::{enable_high_dpi_awareness, SingleInstanceManager};
+use pinwin::winapi::{SingleInstanceManager, enable_high_dpi_awareness};
 
 fn main() {
     enable_high_dpi_awareness();

@@ -53,10 +53,10 @@ pub fn get_relative_path(from_dir: &str, to_path: &str) -> Result<String, &'stat
 /// Choose the shorter representation between relative path and absolute path,
 /// matching `FileFromDisk.Select` in the original C# implementation.
 pub fn choose_optimal_path(base_dir: &str, selected_absolute_path: &str) -> String {
-    if let Ok(rel) = get_relative_path(base_dir, selected_absolute_path) {
-        if rel.len() < selected_absolute_path.len() {
-            return rel;
-        }
+    if let Ok(rel) = get_relative_path(base_dir, selected_absolute_path)
+        && rel.len() < selected_absolute_path.len()
+    {
+        return rel;
     }
     selected_absolute_path.to_string()
 }
@@ -94,16 +94,16 @@ pub fn resolve_asset_path(raw_path: &str) -> Option<PathBuf> {
     if direct.is_file() {
         return Some(direct);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let candidate = exe_dir.join(trimmed);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            let parent_candidate = exe_dir.join("..").join(trimmed);
-            if parent_candidate.is_file() {
-                return Some(parent_candidate);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        let candidate = exe_dir.join(trimmed);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        let parent_candidate = exe_dir.join("..").join(trimmed);
+        if parent_candidate.is_file() {
+            return Some(parent_candidate);
         }
     }
     let fallback = PathBuf::from("PinWin").join(trimmed);

@@ -1,8 +1,17 @@
-//! PinWin executable entry point (`PinWin/Program.cs` equivalent).
+//! PinWin executable entry point.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use pinwin::cli::{CliAction, execute_cli_action, parse_cli_args};
 use pinwin::ui::run_gui_app;
 use pinwin::winapi::{SingleInstanceManager, enable_high_dpi_awareness};
+
+fn attach_parent_console() {
+    unsafe {
+        windows_sys::Win32::System::Console::AttachConsole(
+            windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+        );
+    }
+}
 
 fn main() {
     enable_high_dpi_awareness();
@@ -10,6 +19,7 @@ fn main() {
     let action = match parse_cli_args(std::env::args()) {
         Ok(act) => act,
         Err(err) => {
+            attach_parent_console();
             eprintln!("Error: {}", err);
             std::process::exit(2);
         }
@@ -29,6 +39,7 @@ fn main() {
             }
         }
         other => {
+            attach_parent_console();
             let code = execute_cli_action(other);
             if code != 0 {
                 std::process::exit(code);

@@ -351,6 +351,23 @@ fn overlay_hit_test_finds_window_beneath_overlay() {
 }
 
 #[test]
+fn unpin_all_never_clears_unrelated_topmost_windows() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let target = create_test_window(
+            "UnrelatedTopmost",
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            std::ptr::null_mut(),
+        );
+        ApiTopMost::set(target);
+        // Without a running GUI, bulk operations must fail without enumerating and altering desktop windows.
+        assert_ne!(execute_cli_action(CliAction::UnpinAllTopMost), 0);
+        assert!(ApiTopMost::is_topmost(target));
+        DestroyWindow(target);
+    }
+}
+
+#[test]
 fn test_pin_manager_lifecycle() {
     let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {

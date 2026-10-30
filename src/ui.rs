@@ -1004,6 +1004,11 @@ unsafe extern "system" fn main_wnd_proc(
                 }
                 0
             }
+            crate::pin_manager::WM_PINWIN_UNPIN_ALL => {
+                let count = PinManager::count();
+                PinManager::unpin_all();
+                count as LRESULT
+            }
             WM_PINWIN_WINDOW_EVENT => {
                 PinManager::sync_window(wparam as HWND);
                 0

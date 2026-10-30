@@ -24,6 +24,7 @@ pub const WM_PINWIN_LIST_CHANGED: UINT = WM_APP + 101;
 /// Notification message posted when a Pin badge is clicked or requests unpinning.
 pub const WM_PINWIN_BADGE_UNPIN: UINT = WM_APP + 102;
 pub const WM_PINWIN_WINDOW_EVENT: UINT = WM_APP + 103;
+pub const WM_PINWIN_UNPIN_ALL: UINT = WM_APP + 104;
 
 /// Menu command IDs for the Pin badge right-click quick menu.
 const IDM_BADGE_UNPIN: usize = 5001;

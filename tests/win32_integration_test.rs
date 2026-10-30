@@ -25,6 +25,7 @@ use pinwin::winapi::{
 };
 
 static REGISTER_TEST_CLASS: Once = Once::new();
+static DESKTOP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const TEST_TOPLEVEL_CLASS: &str = "PinWin_IntegrationTest_TopLevel_Class";
 
 unsafe fn create_test_window(title: &str, style: DWORD, parent: HWND) -> HWND {
@@ -65,6 +66,7 @@ unsafe fn create_test_window(title: &str, style: DWORD, parent: HWND) -> HWND {
 
 #[test]
 fn test_win32_owner_form_lookup_parent_child_hierarchy() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         // Root top-level window -> Child panel -> Nested button
         let root = create_test_window(
@@ -91,6 +93,7 @@ fn test_win32_owner_form_lookup_parent_child_hierarchy() {
 
 #[test]
 fn test_win32_topmost_and_window_title_and_effects() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let hwnd = create_test_window(
             "PinWinTopMostIntegrationWindow",
@@ -130,6 +133,7 @@ fn test_win32_topmost_and_window_title_and_effects() {
 
 #[test]
 fn owned_resources_release_on_drop() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Process-wide counters must be isolated from the suite's concurrently created windows.
     if std::env::var_os("PINWIN_RESOURCE_CHILD").is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -174,6 +178,7 @@ fn owned_resources_release_on_drop() {
 
 #[test]
 fn malformed_icon_directory_is_rejected() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // A directory entry pointing beyond the supplied allocation must never reach Win32.
     let mut bytes = vec![0u8; 22];
     bytes[2] = 1;
@@ -187,6 +192,7 @@ fn malformed_icon_directory_is_rejected() {
 
 #[test]
 fn test_embedded_assets_load_cleanly() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let (hbmp, w, h, _colorkey) = ApiResources::create_pinned_bitmap_from_embedded();
         assert!(!hbmp.is_null());
@@ -205,19 +211,148 @@ fn test_embedded_assets_load_cleanly() {
 
 #[test]
 fn mutex_error_does_not_allow_second_instance() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut invalid = SingleInstanceManager::new("invalid\\name\\mutex");
     assert!(!invalid.is_first_instance(0));
 }
 
 #[test]
 fn test_single_instance_mutex_exclusivity() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mutex_name = format!("Local\\PinWin_Test_Mutex_{}", std::process::id());
     let mut inst1 = SingleInstanceManager::new(&mutex_name);
     assert!(inst1.is_first_instance(100));
 }
 
 #[test]
+fn unpin_restores_original_topmost_layered_and_transparent_state() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let target =
+            create_test_window("OriginalEffects", WS_OVERLAPPEDWINDOW, std::ptr::null_mut());
+        assert!(ApiTopMost::set(target));
+        assert!(ApiWindowEffects::set_click_through(target, true, 143));
+        let original_style = GetWindowLongW(target, GWL_EXSTYLE) as u32;
+        PinManager::init(std::ptr::null_mut());
+        assert!(PinManager::pin_window(target, 210, false).unwrap());
+        assert!(PinManager::unpin_window(target));
+        assert!(ApiTopMost::is_topmost(target));
+        let mask = WS_EX_LAYERED | WS_EX_TRANSPARENT;
+        assert_eq!(
+            GetWindowLongW(target, GWL_EXSTYLE) as u32 & mask,
+            original_style & mask
+        );
+        let (mut color, mut alpha, mut flags) = (0, 0, 0);
+        assert_ne!(
+            GetLayeredWindowAttributes(target, &mut color, &mut alpha, &mut flags),
+            FALSE
+        );
+        assert_eq!(alpha, 143);
+        PinManager::shutdown();
+        DestroyWindow(target);
+    }
+}
+
+#[test]
+fn destroyed_target_is_removed_without_touching_other_windows() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        PinManager::init(std::ptr::null_mut());
+        let target =
+            create_test_window("DestroyedTarget", WS_OVERLAPPEDWINDOW, std::ptr::null_mut());
+        PinManager::pin_window(target, 180, false).unwrap();
+        let badge = PinManager::entries()[0].badge_hwnd;
+        DestroyWindow(target);
+        PinManager::sync_all();
+        assert_eq!(PinManager::count(), 0);
+        assert_eq!(IsWindow(badge), FALSE);
+        PinManager::shutdown();
+    }
+}
+
+#[test]
+fn stale_window_snapshot_does_not_restore_new_owner() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use pinwin::winapi::window_state::WindowState;
+    unsafe {
+        let target = create_test_window(
+            "ReplacedIdentity",
+            WS_OVERLAPPEDWINDOW,
+            std::ptr::null_mut(),
+        );
+        let old = WindowState::capture(target).unwrap();
+        assert!(ApiTopMost::set(target));
+        let current = WindowState::capture(target).unwrap();
+        assert!(!old.matches(target));
+        assert!(!old.restore(target));
+        assert!(ApiTopMost::is_topmost(target));
+        assert!(current.restore(target));
+        DestroyWindow(target);
+    }
+}
+
+#[test]
+fn badge_creation_failure_rolls_back_window_effects() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // A fresh process has no registered badge class: force the actual CreateWindowEx failure.
+    if std::env::var_os("PINWIN_ROLLBACK_CHILD").is_none() {
+        assert!(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "badge_creation_failure_rolls_back_window_effects"
+                ])
+                .env("PINWIN_ROLLBACK_CHILD", "1")
+                .status()
+                .unwrap()
+                .success()
+        );
+        return;
+    }
+    unsafe {
+        let target =
+            create_test_window("RollbackTarget", WS_OVERLAPPEDWINDOW, std::ptr::null_mut());
+        assert!(PinManager::pin_window(target, 100, false).is_err());
+        assert_eq!(PinManager::count(), 0);
+        assert!(!ApiTopMost::is_topmost(target));
+        assert_eq!(
+            GetWindowLongW(target, GWL_EXSTYLE) as u32 & WS_EX_LAYERED,
+            0
+        );
+        DestroyWindow(target);
+    }
+}
+
+#[test]
+fn overlay_hit_test_finds_window_beneath_overlay() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let target = create_test_window(
+            "HoverTarget",
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            std::ptr::null_mut(),
+        );
+        let overlay =
+            create_test_window("OverlayTest", WS_POPUP | WS_VISIBLE, std::ptr::null_mut());
+        ApiTopMost::set(target);
+        ApiTopMost::set(overlay);
+        let bounds = ApiWindowPos::get(target);
+        let hit = pinwin::winapi::ApiForm::select_excluding(
+            POINT {
+                x: bounds.left + 50,
+                y: bounds.top + 50,
+            },
+            overlay,
+        );
+        assert_eq!(hit, target);
+        DestroyWindow(overlay);
+        DestroyWindow(target);
+    }
+}
+
+#[test]
 fn test_pin_manager_lifecycle() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let notify_dummy =
             create_test_window("NotifyDummy", WS_OVERLAPPEDWINDOW, std::ptr::null_mut());
@@ -269,6 +404,7 @@ fn test_pin_manager_lifecycle() {
 
 #[test]
 fn test_cli_pin_title_and_unpin_hwnd_live_window() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let hwnd = create_test_window(
             "UniqueCliTargetWindow_98765",
@@ -296,6 +432,7 @@ fn test_cli_pin_title_and_unpin_hwnd_live_window() {
 }
 #[test]
 fn test_ghost_mode_preserves_original_opacity() {
+    let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let notify_dummy = create_test_window(
             "GhostNotifyDummy",

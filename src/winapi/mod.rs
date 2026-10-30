@@ -8,6 +8,7 @@
 
 pub mod ffi;
 pub mod resources;
+pub mod window_state;
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
@@ -441,6 +442,26 @@ impl HierarchyLookup<HWND> for ApiOwnerFormLookup {
 pub struct ApiForm;
 
 impl ApiForm {
+    pub fn select_excluding(point: POINT, excluded: HWND) -> HWND {
+        unsafe {
+            let mut hwnd = GetTopWindow(std::ptr::null_mut());
+            while !hwnd.is_null() {
+                if hwnd != excluded && IsWindowVisible(hwnd) != FALSE && IsIconic(hwnd) == FALSE {
+                    let rect = ApiWindowPos::get(hwnd);
+                    if point.x >= rect.left
+                        && point.x < rect.right
+                        && point.y >= rect.top
+                        && point.y < rect.bottom
+                    {
+                        return hwnd;
+                    }
+                }
+                hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+            }
+        }
+        std::ptr::null_mut()
+    }
+
     pub fn select(point: POINT) -> HWND {
         let found = unsafe { WindowFromPoint(point) };
         if found.is_null() {

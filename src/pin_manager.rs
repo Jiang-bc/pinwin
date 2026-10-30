@@ -12,6 +12,7 @@ use std::ptr::null;
 
 use crate::winapi::ffi::*;
 use crate::winapi::resources::{OwnedBitmap, OwnedHook, OwnedMenu};
+use crate::winapi::window_state::WindowState;
 use crate::winapi::{
     ApiResources, ApiTopMost, ApiWindowEffects, ApiWindowPos, ApiWindowTitle, WindowStyle, to_wide,
 };
@@ -22,6 +23,7 @@ const PIN_BADGE_CLASS: &str = "PinWin_BadgeWindow_Class";
 pub const WM_PINWIN_LIST_CHANGED: UINT = WM_APP + 101;
 /// Notification message posted when a Pin badge is clicked or requests unpinning.
 pub const WM_PINWIN_BADGE_UNPIN: UINT = WM_APP + 102;
+pub const WM_PINWIN_WINDOW_EVENT: UINT = WM_APP + 103;
 
 /// Menu command IDs for the Pin badge right-click quick menu.
 const IDM_BADGE_UNPIN: usize = 5001;
@@ -40,6 +42,7 @@ pub struct PinnedWindowEntry {
     pub opacity: u8,
     pub click_through: bool,
     pub last_badge_pos: POINT,
+    original: WindowState,
 }
 
 impl PinnedWindowEntry {
@@ -106,39 +109,50 @@ pub struct PinManager;
 impl PinManager {
     /// Initialize the Pin badge window class, embedded bitmap, and global `WinEventHook` listeners.
     pub fn init(notify_hwnd: HWND) {
-        STATE.with(|cell| {
-            let mut st = cell.borrow_mut();
+        let (need_bitmap, need_class, need_hooks) = STATE.with(|c| {
+            let mut st = c.borrow_mut();
             st.notify_hwnd = notify_hwnd;
-            if st.pinned_bitmap.is_null() {
-                let (hbmp, w, h, key) = ApiResources::create_pinned_bitmap_from_embedded();
-                st.owned_bitmap = unsafe { OwnedBitmap::from_owned(hbmp) };
-                st.pinned_bitmap = hbmp;
+            (
+                st.pinned_bitmap.is_null(),
+                !st.class_registered,
+                st.hooks.is_empty(),
+            )
+        });
+        // Windows can synchronously call our procedures: never hold a RefCell borrow here.
+        if need_bitmap {
+            let (raw, w, h, key) = ApiResources::create_pinned_bitmap_from_embedded();
+            STATE.with(|c| {
+                let mut st = c.borrow_mut();
+                st.owned_bitmap = unsafe { OwnedBitmap::from_owned(raw) };
+                st.pinned_bitmap = raw;
                 st.badge_width = w;
                 st.badge_height = h;
                 st.badge_colorkey = key;
-            }
-            if !st.class_registered {
-                register_badge_window_class();
-                st.class_registered = true;
-            }
-            if st.hooks.is_empty() {
-                st.hooks = install_win_event_hooks()
-                    .into_iter()
-                    .filter_map(|h| unsafe { OwnedHook::from_owned(h) })
-                    .collect();
-            }
-        });
+            });
+        }
+        if need_class {
+            register_badge_window_class();
+            STATE.with(|c| c.borrow_mut().class_registered = true);
+        }
+        if need_hooks {
+            let hooks = install_win_event_hooks()
+                .into_iter()
+                .filter_map(|h| unsafe { OwnedHook::from_owned(h) })
+                .collect();
+            STATE.with(|c| c.borrow_mut().hooks = hooks);
+        }
     }
 
-    /// Shut down all hooks and unpin all windows cleanly on application exit.
+    /// Shut down all hooks and restore windows before releasing resources.
     pub fn shutdown() {
         Self::unpin_all();
-        STATE.with(|cell| {
-            let mut st = cell.borrow_mut();
-            st.hooks.clear();
-            st.owned_bitmap = None;
+        let (hooks, bitmap) = STATE.with(|c| {
+            let mut st = c.borrow_mut();
             st.pinned_bitmap = std::ptr::null_mut();
+            (std::mem::take(&mut st.hooks), st.owned_bitmap.take())
         });
+        drop(hooks);
+        drop(bitmap);
     }
 
     /// Return a snapshot of all currently pinned windows.
@@ -185,6 +199,9 @@ impl PinManager {
             return Err("Cannot pin a PinBadge window.");
         }
 
+        if Self::is_pinned(target_hwnd) && !Self::identity_matches(target_hwnd) {
+            Self::unpin_window(target_hwnd);
+        }
         if Self::is_pinned(target_hwnd) {
             if toggle_if_pinned {
                 Self::unpin_window(target_hwnd);
@@ -201,19 +218,28 @@ impl PinManager {
             return Err("Window has no title or cannot be pinned.");
         }
 
+        let original = WindowState::capture(target_hwnd)
+            .ok_or("Cannot safely capture window effects or acquire window ownership.")?;
         if !ApiTopMost::set(target_hwnd) {
+            original.restore(target_hwnd);
             return Err(
                 "Failed to set WS_EX_TOPMOST on target window (check elevation/permissions).",
             );
         }
 
         let opacity = default_opacity.clamp(30, 255);
-        if opacity < 255 {
-            let _ = ApiWindowEffects::set_opacity(target_hwnd, opacity);
+        if opacity < 255 && !ApiWindowEffects::set_opacity(target_hwnd, opacity) {
+            original.restore(target_hwnd);
+            return Err("Failed to apply window opacity; original effects restored.");
         }
 
         let badge_pos = WindowStyle::get_pin_badge_location(target_hwnd);
         let badge_hwnd = create_badge_window(target_hwnd, badge_pos);
+        if badge_hwnd.is_null() {
+            original.restore(target_hwnd);
+            return Err("Failed to create pin badge; original effects restored.");
+        }
+        let click_through = original.was_click_through();
 
         STATE.with(|cell| {
             let mut st = cell.borrow_mut();
@@ -222,8 +248,9 @@ impl PinManager {
                 badge_hwnd,
                 title,
                 opacity,
-                click_through: false,
+                click_through,
                 last_badge_pos: badge_pos,
+                original,
             });
         });
 
@@ -249,15 +276,7 @@ impl PinManager {
                     let _ = DestroyWindow(entry.badge_hwnd);
                 }
             }
-            if ApiWindowPos::is_window(entry.target_hwnd) {
-                if entry.click_through {
-                    let _ = ApiWindowEffects::set_click_through(entry.target_hwnd, false, 255);
-                }
-                if entry.opacity < 255 {
-                    let _ = ApiWindowEffects::set_opacity(entry.target_hwnd, 255);
-                }
-                let _ = ApiTopMost::clear(entry.target_hwnd);
-            }
+            entry.original.restore(entry.target_hwnd);
             notify_list_changed();
             true
         } else {
@@ -282,7 +301,8 @@ impl PinManager {
     /// Adjust opacity (`30..=255`) for a pinned window.
     pub fn set_window_opacity(target_hwnd: HWND, opacity: u8) -> bool {
         let clamped = opacity.clamp(30, 255);
-        if !Self::is_pinned(target_hwnd) {
+        if !Self::identity_matches(target_hwnd) {
+            Self::unpin_window(target_hwnd);
             return false;
         }
         if !ApiWindowEffects::set_opacity(target_hwnd, clamped) {
@@ -300,6 +320,10 @@ impl PinManager {
 
     /// Toggle or set click-through (Ghost Mode) for a pinned window.
     pub fn set_window_click_through(target_hwnd: HWND, enabled: bool) -> bool {
+        if !Self::identity_matches(target_hwnd) {
+            Self::unpin_window(target_hwnd);
+            return false;
+        }
         let cur_opacity = STATE.with(|cell| {
             cell.borrow()
                 .entries
@@ -343,7 +367,7 @@ impl PinManager {
 
     /// Synchronize a single pinned window's Pin badge position and TopMost state.
     pub fn sync_window(target_hwnd: HWND) {
-        if !ApiWindowPos::is_window(target_hwnd) {
+        if !Self::identity_matches(target_hwnd) {
             Self::unpin_window(target_hwnd);
             return;
         }
@@ -411,6 +435,17 @@ impl PinManager {
         if title_changed {
             notify_list_changed();
         }
+    }
+
+    fn identity_matches(hwnd: HWND) -> bool {
+        let snapshot = STATE.with(|c| {
+            c.borrow()
+                .entries
+                .iter()
+                .find(|e| e.target_hwnd == hwnd)
+                .map(|e| e.original.clone())
+        });
+        snapshot.is_some_and(|state| state.matches(hwnd))
     }
 
     /// Periodic lightweight health check for all pinned windows (runs every 250ms instead of 10ms + Sleep(1)).
@@ -704,31 +739,24 @@ unsafe extern "system" fn win_event_proc(
     event: DWORD,
     hwnd: HWND,
     id_object: LONG,
-    _id_child: LONG,
+    id_child: LONG,
     _id_event_thread: DWORD,
     _dwms_event_time: DWORD,
 ) {
-    if hwnd.is_null() || id_object != OBJID_WINDOW {
+    if hwnd.is_null() || id_object != OBJID_WINDOW || id_child != 0 {
         return;
     }
-
-    if !PinManager::is_pinned(hwnd) {
-        return;
-    }
-
-    match event {
-        EVENT_OBJECT_DESTROY => {
-            PinManager::unpin_window(hwnd);
+    let notify = STATE.with(|c| c.try_borrow().ok().map(|s| s.notify_hwnd));
+    if let Some(notify) = notify
+        && !notify.is_null()
+    {
+        unsafe {
+            PostMessageW(
+                notify,
+                WM_PINWIN_WINDOW_EVENT,
+                hwnd as usize,
+                event as isize,
+            );
         }
-        EVENT_OBJECT_LOCATIONCHANGE
-        | EVENT_SYSTEM_MOVESIZEEND
-        | EVENT_SYSTEM_MINIMIZESTART
-        | EVENT_SYSTEM_MINIMIZEEND
-        | EVENT_OBJECT_SHOW
-        | EVENT_OBJECT_HIDE
-        | EVENT_OBJECT_NAMECHANGE => {
-            PinManager::sync_window(hwnd);
-        }
-        _ => {}
     }
 }

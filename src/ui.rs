@@ -17,7 +17,9 @@ use crate::keys::{
     VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, is_modifier_only_vk,
 };
 use crate::overlay::DesktopOverlay;
-use crate::pin_manager::{PinManager, WM_PINWIN_BADGE_UNPIN, WM_PINWIN_LIST_CHANGED};
+use crate::pin_manager::{
+    PinManager, WM_PINWIN_BADGE_UNPIN, WM_PINWIN_LIST_CHANGED, WM_PINWIN_WINDOW_EVENT,
+};
 use crate::relative_path::resolve_asset_path;
 use crate::settings::{ApplicationSettings, DEFAULT_CAPTURE_ICON_PATH, DEFAULT_TRAY_ICON_PATH};
 use crate::winapi::ffi::*;
@@ -1000,6 +1002,10 @@ unsafe extern "system" fn main_wnd_proc(
                 if wparam == TIMER_POS_SYNC {
                     PinManager::sync_all();
                 }
+                0
+            }
+            WM_PINWIN_WINDOW_EVENT => {
+                PinManager::sync_window(wparam as HWND);
                 0
             }
             WM_PINWIN_LIST_CHANGED => {

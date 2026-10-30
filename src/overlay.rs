@@ -191,7 +191,7 @@ fn update_hover_target(overlay_hwnd: HWND, screen_pt: POINT) {
     }
 
     // Temporarily hide or skip overlay to inspect underlying window if needed
-    let raw_target = ApiForm::select(screen_pt);
+    let raw_target = ApiForm::select_excluding(screen_pt, overlay_hwnd);
     if !raw_target.is_null() && raw_target != overlay_hwnd {
         let rect = ApiWindowPos::get(raw_target);
         let title = ApiWindowTitle::from_handle(raw_target);

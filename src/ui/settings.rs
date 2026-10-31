@@ -69,6 +69,7 @@ pub(super) unsafe fn open_settings_dialog(owner_hwnd: HWND) {
         }
 
         SETTINGS_UI.with(|c| c.borrow_mut().preview_icons.clear());
+        DPI_FONTS.with(|c| c.borrow_mut().remove(&(dlg_hwnd as usize)));
     }
 }
 
@@ -599,7 +600,9 @@ pub(super) unsafe fn refresh_icon_selector_state(is_tray: bool) {
             } else {
                 DEFAULT_CAPTURE_ICON_PATH
             };
-            let _ = SetWindowTextW(edt_hwnd, to_wide(default_path).as_ptr());
+            if read_window_text(edt_hwnd) != default_path {
+                let _ = SetWindowTextW(edt_hwnd, to_wide(default_path).as_ptr());
+            }
             let _ = SetWindowTextW(lbl_hwnd, to_wide("Using built-in icon").as_ptr());
             let hicon = ApiResources::create_icon_from_ico_bytes(embedded, true, 32);
             replace_preview_icon(pic_hwnd, hicon);

@@ -276,8 +276,11 @@ fn test_single_instance_mutex_exclusivity() {
 fn unpin_restores_original_topmost_layered_and_transparent_state() {
     let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
-        let target =
-            create_test_window("OriginalEffects", WS_OVERLAPPEDWINDOW, std::ptr::null_mut());
+        let target = create_test_window(
+            "OriginalEffects",
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            std::ptr::null_mut(),
+        );
         assert!(ApiTopMost::set(target));
         assert!(ApiWindowEffects::set_click_through(target, true, 143));
         let original_style = GetWindowLongW(target, GWL_EXSTYLE) as u32;
@@ -325,7 +328,7 @@ fn stale_window_snapshot_does_not_restore_new_owner() {
     unsafe {
         let target = create_test_window(
             "ReplacedIdentity",
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             std::ptr::null_mut(),
         );
         let old = WindowState::capture(target).unwrap();
@@ -408,8 +411,11 @@ fn unpin_all_never_clears_unrelated_topmost_windows() {
             std::ptr::null_mut(),
         );
         ApiTopMost::set(target);
-        // Without a running GUI, bulk operations must fail without enumerating and altering desktop windows.
-        assert_ne!(execute_cli_action(CliAction::UnpinAllTopMost), 0);
+        // Do not send an unpin request to an unrelated interactive instance.
+        let gui = FindWindowW(to_wide("PinWin_MainForm_Class").as_ptr(), std::ptr::null());
+        if gui.is_null() {
+            assert_ne!(execute_cli_action(CliAction::UnpinAllTopMost), 0);
+        }
         assert!(ApiTopMost::is_topmost(target));
         DestroyWindow(target);
     }

@@ -740,8 +740,12 @@ pub(super) unsafe extern "system" fn main_wnd_proc(
                 0
             }
             crate::pin_manager::WM_PINWIN_UNPIN_ALL => {
+                // A sent CLI request can reenter a cross-thread window operation.
+                // Queue the mutation so the current manager operation finishes first.
                 let count = PinManager::count();
-                PinManager::unpin_all();
+                if PostMessageW(hwnd, WM_COMMAND, IDC_BTN_UNPIN_ALL, 0) == FALSE {
+                    return -1;
+                }
                 count as LRESULT
             }
             WM_PINWIN_WINDOW_EVENT => {

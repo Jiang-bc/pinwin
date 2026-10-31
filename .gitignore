@@ -1,13 +1,6 @@
-*.user
-obj
-bin
-*.suo
-/.vs
-/PinWinInstaller/PinWinInstaller-SetupFiles
-/PinWinInstaller/PinWinInstaller-cache
-/packages
 /target
 /tools/assetgen/target
 /dist
 /settings.json
 /.worktrees
+/tools/__pycache__

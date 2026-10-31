@@ -16,7 +16,7 @@ use std::ptr::{null, null_mut};
 
 use crate::algorithms::HierarchyLookup;
 use crate::keys::KeyCombo;
-use crate::relative_path::{choose_optimal_path, resolve_asset_path};
+use crate::relative_path::resolve_asset_path;
 use ffi::*;
 
 /// Self-contained native visual assets.
@@ -346,7 +346,9 @@ impl WindowStyle {
     /// Matches `PinForm.GetRelativeLocation(IntPtr handle)` in original PinWin, with bounds clamping.
     pub fn get_pin_badge_location(handle: HWND) -> POINT {
         let style = Self::new(handle);
-        let right_margin = style.get_control_box_width() + 28;
+        let dpi = ApiWindowPos::dpi(handle) as i32;
+        let badge_size = (24 * dpi + 48) / 96;
+        let right_margin = style.get_control_box_width() + badge_size + (4 * dpi + 48) / 96;
         let rect = ApiWindowPos::get(handle);
         let min_x = rect.left + 8;
         let x = (rect.right - right_margin).max(min_x);
@@ -666,7 +668,8 @@ pub fn select_file_from_disk(owner: HWND, title: &str) -> Option<String> {
         if GetOpenFileNameW(&mut ofn) != FALSE {
             let selected = from_wide(&file_buf);
             if !selected.is_empty() {
-                return Some(choose_optimal_path(&cwd, &selected));
+                // Absolute paths remain valid regardless of the process working directory.
+                return Some(selected);
             }
         }
     }

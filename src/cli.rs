@@ -150,6 +150,7 @@ pub fn request_unpin_all() -> Result<usize, String> {
             1500,
             &mut result,
         ) == 0
+            || result == usize::MAX
         {
             return Err("The running PinWin instance did not respond.".into());
         }
@@ -265,7 +266,7 @@ pub fn execute_cli_action(action: CliAction) -> i32 {
         }
         CliAction::UnpinAllTopMost => match request_unpin_all() {
             Ok(count) => {
-                println!("Restored {count} managed window(s).");
+                println!("Queued restoration of {count} managed window(s).");
                 0
             }
             Err(error) => {

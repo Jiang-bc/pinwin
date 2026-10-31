@@ -132,6 +132,7 @@ struct SettingsUiState {
 thread_local! {
     static MAIN_UI: RefCell<MainUiState> = RefCell::new(MainUiState::default());
     static SETTINGS_UI: RefCell<SettingsUiState> = RefCell::new(SettingsUiState::default());
+    static DPI_FONTS: RefCell<std::collections::HashMap<usize, Vec<OwnedFont>>> = RefCell::new(std::collections::HashMap::new());
 }
 
 /// Map an explicit selection onto the refreshed item order.
@@ -152,7 +153,18 @@ use settings::*;
 use tray::*;
 
 unsafe fn scale_controls(hwnd: HWND, old_dpi: u32, new_dpi: u32) {
+    if old_dpi == new_dpi {
+        unsafe {
+            SetPropW(
+                hwnd,
+                to_wide("PinWin.Dpi").as_ptr(),
+                new_dpi as usize as HANDLE,
+            );
+        }
+        return;
+    }
     unsafe {
+        let mut fonts = Vec::new();
         let mut child = GetWindow(hwnd, GW_CHILD);
         while !child.is_null() {
             let mut rect: RECT = zeroed();
@@ -185,11 +197,13 @@ unsafe fn scale_controls(hwnd: HWND, old_dpi: u32, new_dpi: u32) {
                 description.lfHeight = scale(description.lfHeight);
                 if let Some(owned) = OwnedFont::from_owned(CreateFontIndirectW(&description)) {
                     SendMessageW(child, WM_SETFONT, owned.as_raw() as usize, TRUE as isize);
-                    MAIN_UI.with(|c| c.borrow_mut().owned_fonts.push(owned));
+                    fonts.push(owned);
                 }
             }
             child = GetWindow(child, GW_HWNDNEXT);
         }
+        // All controls now use replacements; release the previous generation.
+        DPI_FONTS.with(|c| c.borrow_mut().insert(hwnd as usize, fonts));
         SetPropW(
             hwnd,
             to_wide("PinWin.Dpi").as_ptr(),

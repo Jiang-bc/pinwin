@@ -1,83 +1,85 @@
-# PinWin v2.0 (Rust Native Rewrite)
+# PinWin
 
-**PinWin** is a lightweight, high-performance Windows utility to pin any window **Always on Top** (`WS_EX_TOPMOST`) — originally created by [Victor Zakharov](https://github.com/VictorZakharov/pinwin) in C# (`.NET Framework 4.0` WinForms) as an open-source replacement for DeskPins, and **completely rewritten and modernized in native Rust (`rustc 1.99.1`)**.
+PinWin is a portable Windows utility that keeps selected windows on top. The application is implemented in Rust 2024 with native Win32 controls and official `windows-sys` bindings. It continues the MIT-licensed [original PinWin](https://github.com/VictorZakharov/pinwin) by Victor Zakharov.
 
----
+## Run
 
-## Key Optimizations & New Capabilities in v2.0 (Rust Edition)
+Extract the portable ZIP into a writable folder and open `PinWin.exe`. No installer or .NET runtime is required. Settings are saved as `settings.json` beside the executable; moving that folder moves the settings too. Built-in icons and the selection cursor are embedded.
 
-| Dimension | Legacy v0.2.2 (C# / .NET 4.0) | Modernized v2.0.0 (Rust Native Win32) |
-| :--- | :--- | :--- |
-| **Language & Runtime** | C# `.NET Framework 4.0` + `Newtonsoft.Json` | Pure **Rust 2021 (`rustc 1.99.1`)** — **0 external crate dependencies** |
-| **Executable Artifact** | Multi-file `.exe` + `.dll` + `.NET` runtime required | Single **449 KB** standalone native `PinWin.exe` (all icons & bitmaps embedded via `include_bytes!`) |
-| **Position Synchronization** | 10 ms `WinForms.Timer` polling loop + `Thread.Sleep(1)` on UI thread | Event-driven `SetWinEventHook` (`EVENT_OBJECT_LOCATIONCHANGE`, `EVENT_SYSTEM_MOVESIZEEND`, `EVENT_OBJECT_DESTROY`, `EVENT_OBJECT_NAMECHANGE`) + lightweight 250 ms non-blocking health check |
-| **Window Title Lookup** | Blocking `SendMessage(WM_GETTEXT)` — freezes PinWin if any target app hangs | Non-blocking `SendMessageTimeoutW(..., SMTO_ABORTIFHUNG, 200ms)` with `GetWindowTextW` fallback |
-| **High-DPI & Multi-Monitor** | Legacy `SetProcessDPIAware()` (Issue #17: broken on mixed-DPI displays) | `SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)` + `DWMWA_EXTENDED_FRAME_BOUNDS` |
-| **Pin Badge Placement** | Fixed `GetSystemMetrics` formula (Issue #26: overlaps custom title bars) | `DWMWA_CAPTION_BUTTON_BOUNDS` query with automatic bounds clamping |
-| **Window Opacity Control** | Not supported | **20%–100% Alpha Opacity** via Pin badge mouse-wheel, right-click menu, main GUI buttons, or CLI `--opacity` |
-| **Click-Through (Ghost Mode)** | Not supported | **`WS_EX_TRANSPARENT | WS_EX_LAYERED` Ghost Mode** to click right through reference overlays |
-| **Interactive Overlay HUD** | Static screenshot with crosshair cursor | Double-buffered GDI screenshot + **live cyan target window bounding-box highlight** + **real-time HUD coordinate/title bar** |
-| **Headless CLI Automation** | GUI-only | Full CLI support (`--list-windows`, `--pin-hwnd`, `--unpin-hwnd`, `--pin-title`, `--opacity`, `--unpin-all`, `--print-settings`) |
+- Select a window with **Ctrl + F11**, or pin the window under the cursor with **Ctrl + F12**.
+- Click a floating pin badge to unpin. Right-click it for opacity and click-through options; its mouse wheel adjusts opacity.
+- Manage selected windows in the main list or use the tray menu. Minimizing hides the main window; exiting restores the original state of windows managed by that process.
+- Settings configure shortcuts, custom icons and target highlighting. An empty shortcut disables it. Custom asset paths are absolute or relative to the executable's folder.
+- Click-through windows can be recovered through **Restore ghost windows** in the tray menu.
 
----
+Normal use does not request administrator privileges. Windows may reject changes to elevated or protected applications. Windows 10/11 x64 with the MSVC toolchain is the supported build target. Multi-monitor coordinates, per-monitor DPI updates and Explorer tray recreation are handled by the native UI; see the validation notes for coverage limits.
 
-## Project Architecture (`src/`)
+## Command line
 
-- `src/lib.rs` — Library crate root exposing all modules for unit and integration testing.
-- `src/main.rs` — Application entry point (Per-Monitor V2 DPI setup, CLI dispatch, `SingleInstanceManager` mutex guard, GUI launch).
-- `src/algorithms.rs` — Generic `HierarchyLookup<T>` trait & `FnHierarchyLookup` with `MAX_HIERARCHY_DEPTH = 256` cycle protection.
-- `src/keys.rs` — `KeyCombo` bitmask representation and full bidirectional `KeysStringConverter` (`"CTRL + F11"`, `"SHIFT + ALT + P"`).
-- `src/relative_path.rs` — Windows path normalization, `get_relative_path`, `choose_optimal_path`, and asset path resolution.
-- `src/debounce.rs` — Deterministic `DebounceTracker` state machine.
-- `src/settings.rs` — Zero-dependency JSON serializer/parser compatible with `%APPDATA%\PinWin\settings.json`.
-- `src/winapi/ffi.rs` — Raw `extern "system"` Win32 ABI declarations (`user32`, `gdi32`, `shell32`, `comdlg32`, `kernel32`, plus dynamic `dwmapi` / DPI symbols).
-- `src/winapi/mod.rs` — Safe Rust wrappers (`ApiTopMost`, `ApiWindowEffects`, `ApiWindowPos`, `WindowStyle`, `ApiWindowTitle`, `ApiOwnerFormLookup`, `ApiForm`, `ApiHotKey`, `ApiResources`, `SingleInstanceManager`).
-- `src/pin_manager.rs` — `PinManager`, floating `PinBadge` window (`PinWin_BadgeWindow_Class`), `SetWinEventHook` callbacks, badge context menu, and mouse-wheel opacity adjustment.
-- `src/overlay.rs` — Full-virtual-desktop `DesktopOverlay::select_point` with double-buffered GDI rendering, target window highlight frame, and HUD banner.
-- `src/ui.rs` — Native Win32 `MainForm`, `Shell_NotifyIconW` system tray integration, and modal `SettingsDialog` with live shortcut key capture and custom icon preview.
-- `src/cli.rs` — Command-line parser and headless window automation actions.
-- `tests/win32_integration_test.rs` — Live Win32 integration test suite covering parent-child `HWND` hierarchy, `WS_EX_TOPMOST`, `SendMessageTimeoutW`, layered opacity/click-through, embedded assets, mutex locking, and `PinManager` lifecycle.
-
----
-
-## Building & Testing
-
-```bash
-# Run unit tests + live Win32 integration tests
-cargo test
-
-# Run strict Clippy static analysis
-cargo clippy --all-targets -- -D warnings
-
-# Build optimized standalone release binary (LTO + strip)
-cargo build --release
+```powershell
+.\PinWin.exe --help
+.\PinWin.exe --tray
+.\PinWin.exe --list-windows
+.\PinWin.exe --pin-hwnd 0x1234 --opacity 200
+.\PinWin.exe --pin-title "Reference"
+.\PinWin.exe --unpin-hwnd 0x1234
+.\PinWin.exe --unpin-all
+.\PinWin.exe --print-settings
 ```
 
-The compiled standalone binary is emitted at `target/release/PinWin.exe`.
+`--unpin-all` queues a request for the running PinWin GUI to restore **its managed windows only**. Success acknowledges the queued request; restoration runs on the GUI message loop. It fails if that instance is unavailable. Explicit HWND/title commands operate directly on the specified external windows; they do not create GUI-managed records or floating badges. Consequently they do not provide automatic restoration when the command exits. `--opacity` accepts a byte value and clamps it to 30–255. Conflicting actions, invalid handles and opacity without a pin action are rejected.
 
----
+The release executable uses the Windows GUI subsystem and attaches to an existing parent console for CLI output. For reliable capture and exit codes in scripts, invoke it through a process API or `Start-Process -Wait` with redirected output.
 
-## CLI Usage
+## Configuration
 
-```text
-PinWin v2.0.0 (Rust Rewrite) — Native Win32 Always-on-Top Window Manager
+New files use snake_case keys and empty strings for disabled shortcuts:
 
-USAGE:
-  PinWin.exe [OPTIONS]
-
-OPTIONS:
-  -h, --help                Show this help message
-  -v, --version             Show version information
-  --minimized, --tray       Start PinWin GUI minimized in the system tray
-  --list-windows            List all visible top-level windows with HWND & TopMost state
-  --pin-hwnd <HWND>         Set a window TopMost by HWND (decimal or 0xHEX)
-  --unpin-hwnd <HWND>       Clear TopMost & restore opacity on a window by HWND
-  --pin-title <SUBSTRING>   Set matching window(s) TopMost by title substring
-  --opacity <30..255>       Optional alpha opacity when pinning via CLI
-  --unpin-all               Clear TopMost on all user top-level windows
-  --print-settings          Print active settings JSON
+```json
+{
+  "shortcut_pin_window_prompt": "CTRL + F11",
+  "shortcut_pin_window_under_cursor": "CTRL + F12",
+  "tray_icon_path": "Images/Tray.ico",
+  "capture_icon_path": "Images/TargetWindowIcon.ico",
+  "default_opacity": 255,
+  "highlight_target_on_hover": true
+}
 ```
 
-## License
+Missing custom files fall back to embedded assets. Legacy PascalCase keys and `null` shortcuts are accepted on input. Old AppData settings are not automatically imported: copy the desired file beside the EXE. Saves use an atomic file replacement; failed saves keep the previous file and show an error in the settings dialog.
 
-MIT License
+## Build and validate
+
+Install Rust stable and Visual Studio C++ Build Tools with the Windows SDK. This branch declares and was built with Rust 1.99 (locally `rustc 1.99.1`); earlier toolchains have not been validated.
+
+```powershell
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --release --locked
+pwsh -NoProfile -File tools/package.ps1
+python tools/smoke.py
+```
+
+`target/release/PinWin.exe` is the application. Packaging writes `dist/PinWin-2.0.0-windows-x64.zip` containing the EXE, README and MIT license. There is no installer or automatic startup registration. The build embeds the application icon, Cargo package version, `asInvoker` execution level, Common Controls v6 and PerMonitorV2 manifest. `python tools/smoke.py` checks the built PE resources and exercises the release GUI using windows it creates itself; it requires an interactive Windows desktop and Python 3.
+
+Tests include real Win32 window lifecycle, original opacity/topmost restoration, rollback, identity checks, resource ownership, cursor hotspots and portable configuration. Live desktop tests need a Windows desktop session. CI runs those tests on a Windows runner, but CI results alone do not establish visual or physical multi-monitor correctness.
+
+The artwork generator is a separate development tool, with no image decoding dependency in the application:
+
+```powershell
+cargo run --locked --manifest-path tools/assetgen/Cargo.toml -- .
+```
+
+See [assets/README.md](assets/README.md) for AI provenance and deterministic cursor/icon generation, and [docs/validation.md](docs/validation.md) for the local validation record and remaining manual checks.
+
+## Source
+
+- `src/ui/`: main window, tray, settings and DPI layout.
+- `src/winapi/`: official API exports, resource owners and original window-state snapshots.
+- `src/pin_manager.rs`, `src/overlay.rs`: managed window lifecycle, floating badges and selection.
+- `src/settings.rs`, `src/cli.rs`: Serde configuration and Clap argument parsing.
+- `resources/`, `build.rs`: executable icon, version and manifest.
+- `tools/assetgen/`: reproducible artwork conversion.
+
+MIT License. See [LICENSE](LICENSE).

@@ -2,10 +2,11 @@
 name = "pinwin"
 version = "2.0.0"
 edition = "2024"
+rust-version = "1.99"
 authors = ["Victor Zakharov", "Chiang-bc"]
 description = "PinWin (Rust Rewrite) - High-performance native Win32 Always-on-Top window manager & DeskPins alternative"
 license = "MIT"
-repository = "https://github.com/VictorZakharov/pinwin"
+repository = "https://github.com/Jiang-bc/pinwin"
 
 [lib]
 name = "pinwin"
@@ -27,3 +28,6 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+[build-dependencies]
+embed-resource = "3.0.12"

@@ -14,7 +14,7 @@ use crate::winapi::ffi::*;
 use crate::winapi::resources::{OwnedBitmap, OwnedHook, OwnedMenu};
 use crate::winapi::window_state::WindowState;
 use crate::winapi::{
-    ApiResources, ApiTopMost, ApiWindowEffects, ApiWindowPos, ApiWindowTitle, WindowStyle, to_wide,
+    ApiTopMost, ApiWindowEffects, ApiWindowPos, ApiWindowTitle, WindowStyle, to_wide,
 };
 
 const PIN_BADGE_CLASS: &str = "PinWin_BadgeWindow_Class";
@@ -74,11 +74,10 @@ impl PinnedWindowEntry {
 
 struct GlobalHookState {
     notify_hwnd: HWND,
-    pinned_bitmap: HBITMAP,
-    owned_bitmap: Option<OwnedBitmap>,
+    badge_icon: HICON,
+    owned_icon: Option<crate::winapi::resources::OwnedIcon>,
     badge_width: i32,
     badge_height: i32,
-    badge_colorkey: COLORREF,
     entries: Vec<PinnedWindowEntry>,
     hooks: Vec<OwnedHook>,
     class_registered: bool,
@@ -88,11 +87,10 @@ impl Default for GlobalHookState {
     fn default() -> Self {
         Self {
             notify_hwnd: std::ptr::null_mut(),
-            pinned_bitmap: std::ptr::null_mut(),
-            owned_bitmap: None,
+            badge_icon: std::ptr::null_mut(),
+            owned_icon: None,
             badge_width: 43,
             badge_height: 42,
-            badge_colorkey: rgb(255, 0, 255),
             entries: Vec::new(),
             hooks: Vec::new(),
             class_registered: false,
@@ -114,21 +112,22 @@ impl PinManager {
             let mut st = c.borrow_mut();
             st.notify_hwnd = notify_hwnd;
             (
-                st.pinned_bitmap.is_null(),
+                st.badge_icon.is_null(),
                 !st.class_registered,
                 st.hooks.is_empty(),
             )
         });
         // Windows can synchronously call our procedures: never hold a RefCell borrow here.
         if need_bitmap {
-            let (raw, w, h, key) = ApiResources::create_pinned_bitmap_from_embedded();
+            let icon =
+                crate::winapi::resources::load_embedded_icon(crate::winapi::EMBEDDED_APP_ICO, 64)
+                    .ok();
             STATE.with(|c| {
                 let mut st = c.borrow_mut();
-                st.owned_bitmap = unsafe { OwnedBitmap::from_owned(raw) };
-                st.pinned_bitmap = raw;
-                st.badge_width = w;
-                st.badge_height = h;
-                st.badge_colorkey = key;
+                st.badge_icon = icon.as_ref().map_or(std::ptr::null_mut(), |i| i.as_raw());
+                st.owned_icon = icon;
+                st.badge_width = 24;
+                st.badge_height = 24;
             });
         }
         if need_class {
@@ -149,8 +148,8 @@ impl PinManager {
         Self::unpin_all();
         let (hooks, bitmap) = STATE.with(|c| {
             let mut st = c.borrow_mut();
-            st.pinned_bitmap = std::ptr::null_mut();
-            (std::mem::take(&mut st.hooks), st.owned_bitmap.take())
+            st.badge_icon = std::ptr::null_mut();
+            (std::mem::take(&mut st.hooks), st.owned_icon.take())
         });
         drop(hooks);
         drop(bitmap);
@@ -388,9 +387,12 @@ impl PinManager {
                 })
         });
 
-        let Some((badge_hwnd, old_title, badge_w, badge_h)) = snapshot else {
+        let Some((badge_hwnd, old_title, _, _)) = snapshot else {
             return;
         };
+        let dpi = ApiWindowPos::dpi(target_hwnd);
+        let badge_w = (24 * dpi as i32 + 48) / 96;
+        let badge_h = badge_w;
 
         if ApiWindowPos::is_iconic(target_hwnd) || !ApiWindowPos::is_visible(target_hwnd) {
             if !badge_hwnd.is_null() {
@@ -488,10 +490,9 @@ fn register_badge_window_class() {
 }
 
 fn create_badge_window(target_hwnd: HWND, pos: POINT) -> HWND {
-    let (w, h, colorkey) = STATE.with(|cell| {
-        let st = cell.borrow();
-        (st.badge_width, st.badge_height, st.badge_colorkey)
-    });
+    let dpi = ApiWindowPos::dpi(target_hwnd);
+    let w = (24 * dpi as i32 + 48) / 96;
+    let h = w;
 
     unsafe {
         let h_inst = GetModuleHandleW(null());
@@ -513,7 +514,7 @@ fn create_badge_window(target_hwnd: HWND, pos: POINT) -> HWND {
         );
         if !hwnd.is_null() {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, target_hwnd as isize);
-            let _ = SetLayeredWindowAttributes(hwnd, colorkey, 255, LWA_COLORKEY);
+            render_badge(hwnd, w);
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
             let _ = UpdateWindow(hwnd);
         }
@@ -572,20 +573,14 @@ unsafe extern "system" fn badge_wnd_proc(
                 }
                 0
             }
+            WM_DPICHANGED => {
+                let size = (24 * hiword(wparam) as i32 + 48) / 96;
+                render_badge(hwnd, size);
+                0
+            }
             WM_PAINT => {
                 let mut ps: PAINTSTRUCT = zeroed();
-                let hdc = BeginPaint(hwnd, &mut ps);
-                let (hbmp, w, h) = STATE.with(|cell| {
-                    let st = cell.borrow();
-                    (st.pinned_bitmap, st.badge_width, st.badge_height)
-                });
-                if !hbmp.is_null() {
-                    let mem_dc = CreateCompatibleDC(hdc);
-                    let old = SelectObject(mem_dc, hbmp);
-                    let _ = BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
-                    SelectObject(mem_dc, old);
-                    DeleteDC(mem_dc);
-                }
+                let _hdc = BeginPaint(hwnd, &mut ps);
                 EndPaint(hwnd, &ps);
                 0
             }
@@ -759,5 +754,71 @@ unsafe extern "system" fn win_event_proc(
                 event as isize,
             );
         }
+    }
+}
+
+fn render_badge(hwnd: HWND, size: i32) {
+    // DrawIconEx writes the icon's premultiplied alpha into a clear 32-bit DIB.
+    unsafe {
+        let screen = GetDC(std::ptr::null_mut());
+        let Some(dc) = crate::winapi::resources::OwnedDc::from_owned(CreateCompatibleDC(screen))
+        else {
+            ReleaseDC(std::ptr::null_mut(), screen);
+            return;
+        };
+        let mut info: BITMAPINFO = zeroed();
+        info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+        info.bmiHeader.biWidth = size;
+        info.bmiHeader.biHeight = -size;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        let mut bits = std::ptr::null_mut();
+        let raw = CreateDIBSection(
+            screen,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        if let Some(bitmap) = OwnedBitmap::from_owned(raw)
+            && !bits.is_null()
+        {
+            std::ptr::write_bytes(bits.cast::<u8>(), 0, (size * size * 4) as usize);
+            let old = SelectObject(dc.as_raw(), bitmap.as_raw());
+            let icon = STATE.with(|c| c.borrow().badge_icon);
+            DrawIconEx(
+                dc.as_raw(),
+                0,
+                0,
+                icon,
+                size,
+                size,
+                0,
+                std::ptr::null_mut(),
+                DI_NORMAL,
+            );
+            let dimensions = SIZE { cx: size, cy: size };
+            let source = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            UpdateLayeredWindow(
+                hwnd,
+                screen,
+                std::ptr::null(),
+                &dimensions,
+                dc.as_raw(),
+                &source,
+                0,
+                &blend,
+                ULW_ALPHA,
+            );
+            SelectObject(dc.as_raw(), old);
+        }
+        ReleaseDC(std::ptr::null_mut(), screen);
     }
 }

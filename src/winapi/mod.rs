@@ -19,11 +19,12 @@ use crate::keys::KeyCombo;
 use crate::relative_path::{choose_optimal_path, resolve_asset_path};
 use ffi::*;
 
-/// Embedded original PinWin visual assets (`Pinned.bmp`, `Tray.ico`, `TargetWindowIcon.ico`, `PinWin.ico`).
-pub static EMBEDDED_PINNED_BMP: &[u8] = include_bytes!("../../PinWin/Images/Pinned.bmp");
-pub static EMBEDDED_TRAY_ICO: &[u8] = include_bytes!("../../PinWin/Images/Tray.ico");
-pub static EMBEDDED_TARGET_CURSOR_ICO: &[u8] =
-    include_bytes!("../../PinWin/Images/TargetWindowIcon.ico");
+/// Self-contained native visual assets.
+pub static EMBEDDED_APP_ICO: &[u8] = include_bytes!("../../assets/icons/app.ico");
+pub static EMBEDDED_TARGET_CUR: &[u8] = include_bytes!("../../assets/icons/target.cur");
+pub static EMBEDDED_PINNED_BMP: &[u8] = include_bytes!("../../assets/icons/pinned.bmp");
+pub static EMBEDDED_TRAY_ICO: &[u8] = include_bytes!("../../assets/icons/tray.ico");
+pub static EMBEDDED_TARGET_CURSOR_ICO: &[u8] = include_bytes!("../../assets/icons/target.ico");
 
 /// Convert a Rust `&str` to a null-terminated UTF-16 `Vec<u16>`.
 pub fn to_wide(s: &str) -> Vec<u16> {
@@ -210,6 +211,10 @@ impl ApiWindowEffects {
 pub struct ApiWindowPos;
 
 impl ApiWindowPos {
+    pub fn dpi(hwnd: HWND) -> u32 {
+        unsafe { GetDpiForWindow(hwnd) }.max(96)
+    }
+
     /// Get real visible window bounds using `DWMWA_EXTENDED_FRAME_BOUNDS` with fallback to `GetWindowRect`.
     pub fn get(hwnd: HWND) -> RECT {
         if hwnd.is_null() {
@@ -531,25 +536,11 @@ impl ApiResources {
                 return hc;
             }
         }
-        unsafe {
-            let Some(icon) = resources::OwnedIcon::from_owned(Self::create_icon_from_ico_bytes(
-                embedded_ico,
-                true,
-                32,
-            )) else {
-                return CopyIcon(LoadCursorW(null_mut(), IDC_CROSS));
-            };
-            let mut info: ICONINFO = zeroed();
-            if GetIconInfo(icon.as_raw(), &mut info) == FALSE {
-                return null_mut();
-            }
-            let _mask = resources::OwnedBitmap::from_owned(info.hbmMask);
-            let _color = resources::OwnedBitmap::from_owned(info.hbmColor);
-            info.fIcon = FALSE;
-            info.xHotspot = 16;
-            info.yHotspot = 16;
-            CreateIconIndirect(&info)
-        }
+        let _ = embedded_ico;
+        let Ok(cursor) = resources::load_embedded_cursor(EMBEDDED_TARGET_CUR, 32) else {
+            return unsafe { CopyIcon(LoadCursorW(null_mut(), IDC_CROSS)) };
+        };
+        unsafe { CopyIcon(cursor.as_raw()) }
     }
 
     /// Validate an ICO directory before handing its selected frame to Windows.

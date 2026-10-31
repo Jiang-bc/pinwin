@@ -84,33 +84,19 @@ fn split_components(path_str: &str) -> Vec<String> {
     parts
 }
 
-/// Resolve an icon path against candidate directories (current dir, exe dir, `PinWin/Images`).
+/// Resolve custom resources beside the portable executable.
 pub fn resolve_asset_path(raw_path: &str) -> Option<PathBuf> {
     let trimmed = raw_path.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let direct = PathBuf::from(trimmed);
-    if direct.is_file() {
-        return Some(direct);
-    }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(exe_dir) = exe.parent()
-    {
-        let candidate = exe_dir.join(trimmed);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        let parent_candidate = exe_dir.join("..").join(trimmed);
-        if parent_candidate.is_file() {
-            return Some(parent_candidate);
-        }
-    }
-    let fallback = PathBuf::from("PinWin").join(trimmed);
-    if fallback.is_file() {
-        return Some(fallback);
-    }
-    None
+    let path = PathBuf::from(trimmed);
+    let candidate = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_exe().ok()?.parent()?.join(path)
+    };
+    candidate.is_file().then_some(candidate)
 }
 
 #[cfg(test)]

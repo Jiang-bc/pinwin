@@ -191,13 +191,61 @@ fn malformed_icon_directory_is_rejected() {
 }
 
 #[test]
+fn badge_size_tracks_target_dpi() {
+    let _guard = DESKTOP_TEST_LOCK.lock().unwrap();
+    pinwin::winapi::enable_high_dpi_awareness();
+    unsafe {
+        let target = create_test_window(
+            "DPI badge",
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            std::ptr::null_mut(),
+        );
+        PinManager::init(std::ptr::null_mut());
+        PinManager::pin_window(target, 255, false).unwrap();
+        let badge = PinManager::entries()[0].badge_hwnd;
+        let rect = ApiWindowPos::get(badge);
+        let dpi = GetDpiForWindow(target).max(96);
+        assert_eq!(rect.width(), (24 * dpi as i32 + 48) / 96);
+        PinManager::shutdown();
+        DestroyWindow(target);
+    }
+}
+
+#[test]
+fn embedded_resources_load_at_supported_sizes() {
+    let _guard = DESKTOP_TEST_LOCK.lock().unwrap();
+    for size in [32, 48, 64] {
+        let bytes = include_bytes!("../assets/icons/target.cur");
+        let cursor = pinwin::winapi::resources::load_embedded_cursor(bytes, size).unwrap();
+        unsafe {
+            let mut info: ICONINFO = zeroed();
+            assert_ne!(GetIconInfo(cursor.as_raw(), &mut info), FALSE);
+            assert_eq!(info.fIcon, FALSE);
+            assert_eq!(info.xHotspot, size as u32 / 2);
+            assert_eq!(info.yHotspot, size as u32 / 2);
+            let _mask = pinwin::winapi::resources::OwnedBitmap::from_owned(info.hbmMask);
+            let _color = pinwin::winapi::resources::OwnedBitmap::from_owned(info.hbmColor);
+        }
+    }
+    for size in [16, 20, 24, 32, 48, 64, 128, 256] {
+        assert!(
+            pinwin::winapi::resources::load_embedded_icon(
+                include_bytes!("../assets/icons/app.ico"),
+                size
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn test_embedded_assets_load_cleanly() {
     let _desktop = DESKTOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         let (hbmp, w, h, _colorkey) = ApiResources::create_pinned_bitmap_from_embedded();
         assert!(!hbmp.is_null());
-        assert_eq!(w, 19);
-        assert_eq!(h, 18);
+        assert_eq!(w, 24);
+        assert_eq!(h, 24);
         let _ = DeleteObject(hbmp);
 
         let tray_icon = ApiResources::create_icon_from_ico_bytes(EMBEDDED_TRAY_ICO, true, 16);

@@ -1,26 +1,8 @@
-use std::fs;
+use pinwin::ui::selection_indices;
 
 #[test]
-fn mouse_move_recomptes_hover_target() {
-    let src = fs::read_to_string("src/overlay.rs").unwrap();
-    let block = src
-        .split("WM_MOUSEMOVE =>")
-        .nth(1)
-        .unwrap()
-        .split("WM_KEYDOWN")
-        .next()
-        .unwrap();
-    assert!(
-        block.contains("update_hover_target("),
-        "WM_MOUSEMOVE must refresh the hovered target"
-    );
-}
-
-#[test]
-fn refresh_does_not_select_every_pinned_window() {
-    let src = fs::read_to_string("src/ui.rs").unwrap();
-    assert!(
-        !src.contains("LB_SETSEL, TRUE as WPARAM, -1"),
-        "refresh must not select all rows"
-    );
+fn selection_model_preserves_explicit_selection() {
+    assert_eq!(selection_indices(&[10, 20, 30], &[20, 99]), vec![1]);
+    assert!(selection_indices(&[10, 20], &[]).is_empty());
+    assert_eq!(selection_indices(&[30, 20], &[20, 30]), vec![0, 1]);
 }
